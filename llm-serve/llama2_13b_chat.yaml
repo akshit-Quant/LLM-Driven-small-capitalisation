@@ -1,0 +1,69 @@
+# vLLM server for the Llama-2-13B-chat sentiment backend.
+#
+# Usage:
+#   docker compose -f llm-serve/llama2_13b_chat.yaml up -d
+#   docker compose -f llm-serve/llama2_13b_chat.yaml logs -f
+#   docker compose -f llm-serve/llama2_13b_chat.yaml down
+#
+# Tyche configuration:
+#   TYCHE_SENTIMENT_LLAMA2_BASE_URL=http://localhost:8002/v1
+#   TYCHE_SENTIMENT_LLAMA2_MODEL=llama2-13b-chat
+
+services:
+  llama2_13b_chat:
+    image: vllm/vllm-openai:latest
+    container_name: tyche-sentiment-llama2
+
+    ports:
+      - "8002:8000"
+
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+      # The AWQ repo has no tokenizer chat_template; vLLM needs one for chat.
+      - ../docker/chat-templates:/chat-templates:ro
+
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+
+    command:
+      - "${LLAMA2_MODEL:-TheBloke/Llama-2-13B-chat-AWQ}"
+      - "--served-model-name=llama2-13b-chat"
+      - "--chat-template=/chat-templates/llama-2-chat.jinja"
+      - "--quantization=awq"
+      - "--dtype=bfloat16"
+      - "--gpu-memory-utilization=${LLAMA2_GPU_MEMORY_UTILIZATION:-0.45}"
+      - "--max-num-seqs=32"
+      - "--max-model-len=4096"
+      - "--host=0.0.0.0"
+      - "--port=8000"
+      - '--structured-outputs-config={"backend":"xgrammar","disable_any_whitespace":true}'
+
+    ipc: host
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "${LLAMA2_GPU_DEVICE:-0}"
+              capabilities:
+                - gpu
+
+    restart: unless-stopped
+
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - >
+          import urllib.request as u;
+          u.urlopen("http://localhost:8000/health", timeout=5)
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+
+volumes:
+  hf-cache:

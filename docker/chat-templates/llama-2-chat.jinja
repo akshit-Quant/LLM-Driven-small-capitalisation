@@ -1,0 +1,34 @@
+{#-
+  Llama-2-chat prompt format.
+
+  Supplied to vLLM with --chat-template because the AWQ-quantized repos carry a
+  tokenizer with no chat_template of their own, and transformers >= 4.44 refuses
+  to fall back to a default one (the 400 the server returns otherwise).
+
+      <s>[INST] <<SYS>>
+      {system}
+      <</SYS>>
+
+      {user} [/INST] {assistant} </s>
+
+  The system turn is folded into the first user turn inside a <<SYS>> block,
+  which is what Llama-2-chat was fine-tuned on.
+-#}
+{%- if messages[0]['role'] == 'system' -%}
+    {%- set system_message = '<<SYS>>\n' + messages[0]['content'] | trim + '\n<</SYS>>\n\n' -%}
+    {%- set loop_messages = messages[1:] -%}
+{%- else -%}
+    {%- set system_message = '' -%}
+    {%- set loop_messages = messages -%}
+{%- endif -%}
+{%- for message in loop_messages -%}
+    {%- if message['role'] == 'user' -%}
+        {%- if loop.first -%}
+            {{- bos_token + '[INST] ' + system_message + message['content'] | trim + ' [/INST]' -}}
+        {%- else -%}
+            {{- bos_token + '[INST] ' + message['content'] | trim + ' [/INST]' -}}
+        {%- endif -%}
+    {%- elif message['role'] == 'assistant' -%}
+        {{- ' ' + message['content'] | trim + ' ' + eos_token -}}
+    {%- endif -%}
+{%- endfor -%}

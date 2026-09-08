@@ -1,0 +1,32 @@
+{#-
+  Mistral-Instruct prompt format.
+
+  Supplied to vLLM with --chat-template for the same reason as the Llama-2 one:
+  the AWQ-quantized repo's tokenizer may carry no chat_template, and
+  transformers >= 4.44 refuses to fall back to a default.
+
+      <s>[INST] {system}\n\n{user} [/INST]{assistant}</s>
+
+  Mistral-Instruct has no dedicated system role, so the system turn is prepended
+  to the first user turn rather than wrapped in its own block. Sending a system
+  message is therefore safe here — it does not raise, it just folds in.
+-#}
+{%- if messages[0]['role'] == 'system' -%}
+    {%- set system_message = messages[0]['content'] | trim + '\n\n' -%}
+    {%- set loop_messages = messages[1:] -%}
+{%- else -%}
+    {%- set system_message = '' -%}
+    {%- set loop_messages = messages -%}
+{%- endif -%}
+{{- bos_token -}}
+{%- for message in loop_messages -%}
+    {%- if message['role'] == 'user' -%}
+        {%- if loop.first -%}
+            {{- '[INST] ' + system_message + message['content'] | trim + ' [/INST]' -}}
+        {%- else -%}
+            {{- '[INST] ' + message['content'] | trim + ' [/INST]' -}}
+        {%- endif -%}
+    {%- elif message['role'] == 'assistant' -%}
+        {{- ' ' + message['content'] | trim + eos_token -}}
+    {%- endif -%}
+{%- endfor -%}
