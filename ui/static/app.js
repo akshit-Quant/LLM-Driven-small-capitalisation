@@ -71,6 +71,8 @@ let dashboardState = {
 };
 let selectedSymbol = 'AAPL';
 let selectedPeriod = 'D1';
+let liveQuotes = {};
+let baselineTotalValue = dashboardState.totalValue;
 let chartOptions = { type: 'candles', grid: true, ma: true, crosshair: true };
 let liveQuoteInFlight = false;
 let watchlistQuotesInFlight = false;
@@ -86,6 +88,29 @@ function currency(value) {
 
 function pct(value) {
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+}
+
+function valueClass(value) {
+  return value < 0 ? 'value-down' : 'value-up';
+}
+
+function recalculateLivePortfolio() {
+  let marketValue = 0;
+  let livePnl = 0;
+  (dashboardState.positions || []).forEach((position) => {
+    const quote = Number(liveQuotes[position.symbol]) || Number(position.price);
+    if (!Number.isFinite(quote)) return;
+    const entry = Number(position.entryPrice ?? position.price);
+    position.price = quote;
+    position.change = entry ? ((quote / entry) - 1) * 100 : 0;
+    marketValue += Number(position.quantity) * quote;
+    livePnl += (quote - entry) * Number(position.quantity);
+  });
+  if (!marketValue) return;
+  dashboardState.totalValue = Number(dashboardState.cash || 0) + marketValue;
+  dashboardState.accountBalance = dashboardState.totalValue;
+  dashboardState.pnl = livePnl;
+  dashboardState.trend = baselineTotalValue ? (livePnl / baselineTotalValue) * 100 : 0;
 }
 
 function setupRevealAnimations() {
@@ -106,35 +131,52 @@ function renderStats() {
   document.getElementById('buyingPower').textContent = currency(dashboardState.buyingPower);
   document.getElementById('totalValue').textContent = currency(dashboardState.totalValue);
   document.getElementById('pnlValue').textContent = currency(dashboardState.pnl);
+  document.getElementById('totalValue').className = valueClass(dashboardState.totalValue - baselineTotalValue);
+  document.getElementById('pnlValue').className = valueClass(dashboardState.pnl);
   document.getElementById('cashValue').textContent = currency(dashboardState.cash);
   document.getElementById('riskScore').textContent = `${dashboardState.riskScore}%`;
   document.getElementById('riskMeter').style.width = `${dashboardState.riskScore}%`;
   document.getElementById('sentimentValue').textContent = dashboardState.sentiment.toFixed(2);
-  document.getElementById('totalTrend').textContent = pct(dashboardState.trend);
-  document.getElementById('pnlTrend').textContent = pct(dashboardState.trend * 1.5);
+  const totalTrend = document.getElementById('totalTrend');
+  const pnlTrend = document.getElementById('pnlTrend');
+  totalTrend.textContent = pct(dashboardState.trend);
+  pnlTrend.textContent = currency(dashboardState.pnl);
+  totalTrend.className = `trend ${valueClass(dashboardState.trend)}`;
+  pnlTrend.className = `trend ${valueClass(dashboardState.pnl)}`;
   document.getElementById('sentimentTrend').textContent = dashboardState.sentiment >= 0.65 ? 'Bullish' : 'Neutral';
   const metrics = dashboardState.riskMetrics || {};
   const sharpe = Number(metrics.sharpe);
   const drawdown = Number(metrics.drawdown);
-  document.getElementById('sharpeValue').textContent = Number.isFinite(sharpe) ? sharpe.toFixed(2) : '--';
-  document.getElementById('drawdownValue').textContent = Number.isFinite(drawdown) ? `${drawdown.toFixed(2)}%` : '--';
-  document.getElementById('sharpeNote').textContent = 'Calculated from live portfolio curve';
-  document.getElementById('drawdownNote').textContent = 'Current maximum peak-to-trough loss';
+  const sharpeValue = document.getElementById('sharpeValue');
+  const drawdownValue = document.getElementById('drawdownValue');
+  const sharpeNote = document.getElementById('sharpeNote');
+  const drawdownNote = document.getElementById('drawdownNote');
+  if (sharpeValue) sharpeValue.textContent = Number.isFinite(sharpe) ? sharpe.toFixed(2) : '--';
+  if (drawdownValue) drawdownValue.textContent = Number.isFinite(drawdown) ? `${drawdown.toFixed(2)}%` : '--';
+  if (sharpeNote) sharpeNote.textContent = 'Calculated from live portfolio curve';
+  if (drawdownNote) drawdownNote.textContent = 'Current maximum peak-to-trough loss';
   const marketMetrics = dashboardState.marketMetrics || {};
   const trendStrength = Number(marketMetrics.trendStrength);
   const trendChange = Number(marketMetrics.trendChange);
   const atr = Number(marketMetrics.atr);
   const beta = Number(marketMetrics.beta);
-  document.getElementById('trendStrengthValue').textContent = Number.isFinite(trendStrength) ? trendStrength.toFixed(1) : '--';
-  document.getElementById('trendStrengthNote').textContent =
+  const trendStrengthValue = document.getElementById('trendStrengthValue');
+  const trendStrengthNote = document.getElementById('trendStrengthNote');
+  const atrValue = document.getElementById('atrValue');
+  const atrNote = document.getElementById('atrNote');
+  const sideTrend = document.getElementById('sideTrend');
+  const sideVolatility = document.getElementById('sideVolatility');
+  const sideBeta = document.getElementById('sideBeta');
+  if (trendStrengthValue) trendStrengthValue.textContent = Number.isFinite(trendStrength) ? trendStrength.toFixed(1) : '--';
+  if (trendStrengthNote) trendStrengthNote.textContent =
     Number.isFinite(trendChange) ? `${trendChange >= 0 ? '+' : ''}${trendChange.toFixed(2)}% over recent candles` : 'Live price trend';
-  document.getElementById('atrValue').textContent = Number.isFinite(atr) ? `${atr.toFixed(2)}%` : '--';
-  document.getElementById('atrNote').textContent = 'Average true range of recent candles';
-  document.getElementById('sideTrend').textContent = Number.isFinite(trendChange) ? (trendChange >= 0 ? 'Long' : 'Short') : '--';
-  document.getElementById('sideVolatility').textContent = Number.isFinite(atr)
+  if (atrValue) atrValue.textContent = Number.isFinite(atr) ? `${atr.toFixed(2)}%` : '--';
+  if (atrNote) atrNote.textContent = 'Average true range of recent candles';
+  if (sideTrend) sideTrend.textContent = Number.isFinite(trendChange) ? (trendChange >= 0 ? 'Long' : 'Short') : '--';
+  if (sideVolatility) sideVolatility.textContent = Number.isFinite(atr)
     ? (atr < 1 ? 'Low' : (atr < 3 ? 'Moderate' : 'High'))
     : '--';
-  document.getElementById('sideBeta').textContent = Number.isFinite(beta) ? beta.toFixed(2) : 'N/A';
+  if (sideBeta) sideBeta.textContent = Number.isFinite(beta) ? beta.toFixed(2) : 'N/A';
 }
 
 function renderTicker() {
@@ -232,7 +274,9 @@ function renderPositions() {
   positionsList.innerHTML = dashboardState.positions
     .map((position) => {
       const value = position.quantity * position.price;
-      const className = position.change >= 0 ? 'value-up' : 'value-down';
+      const entryPrice = Number(position.entryPrice ?? position.price);
+      const livePnl = (Number(position.price) - entryPrice) * Number(position.quantity);
+      const className = valueClass(livePnl);
       return `
         <div class="position-row">
           <div class="position-meta">
@@ -245,7 +289,7 @@ function renderPositions() {
           </div>
           <div class="position-value">
             <strong>${currency(value)}</strong>
-            <span>${position.change >= 0 ? 'Long' : 'Short'}</span>
+            <span class="${className}">Live P&amp;L ${currency(livePnl)}</span>
           </div>
           <div class="position-change ${className}">${pct(position.change)}</div>
         </div>
@@ -257,23 +301,28 @@ function renderPositions() {
 function renderHistory() {
   const historyList = document.getElementById('historyList');
   historyList.innerHTML = dashboardState.history
-    .map((trade) => `
-      <div class="history-row">
-        <div>
-          <strong>${trade.symbol}</strong>
-          <span>${trade.time}</span>
+    .map((trade) => {
+      const quote = Number(liveQuotes[trade.symbol] ?? trade.price);
+      const tradePnl = (quote - Number(trade.price)) * (trade.side === 'Buy' ? Number(trade.qty) : -Number(trade.qty));
+      return `
+        <div class="history-row">
+          <div>
+            <strong>${trade.symbol}</strong>
+            <span>${trade.time}</span>
+          </div>
+          <div class="side ${trade.side.toLowerCase()}">${trade.side}</div>
+          <div>
+            <strong>${trade.qty} sh</strong>
+            <span>${currency(trade.price)}</span>
+          </div>
+          <div class="position-value">
+            <strong>${trade.status || (trade.side === 'Buy' ? 'Filled' : 'Closed')}</strong>
+            <span class="${valueClass(tradePnl)}">Live P&amp;L ${currency(tradePnl)}</span>
+            <span>${trade.status === 'Open' && trade.id ? `<button class="cancel-order" data-order-id="${trade.id}">Cancel</button>` : ''}</span>
+          </div>
         </div>
-        <div class="side ${trade.side.toLowerCase()}">${trade.side}</div>
-        <div>
-          <strong>${trade.qty} sh</strong>
-          <span>${currency(trade.price)}</span>
-        </div>
-        <div class="position-value">
-          <strong>${trade.status || (trade.side === 'Buy' ? 'Filled' : 'Closed')}</strong>
-          <span>${trade.status === 'Open' && trade.id ? `<button class="cancel-order" data-order-id="${trade.id}">Cancel</button>` : (trade.side === 'Buy' ? 'Exited' : 'Exited')}</span>
-        </div>
-      </div>
-    `)
+      `;
+    })
     .join('');
 }
 
@@ -311,14 +360,31 @@ function renderHeatmap() {
 function renderNewsReviews() {
   const container = document.getElementById('newsReviews');
   const reviews = dashboardState.newsReviews || [];
+  const meta = document.getElementById('sentimentMeta');
+  if (meta) {
+    const updated = dashboardState.sentimentUpdatedAt
+      ? new Date(dashboardState.sentimentUpdatedAt).toLocaleTimeString()
+      : 'not available';
+    const feed = dashboardState.newsFeedStatus;
+    meta.innerHTML = `
+      <span class="model-badge finbert">FinBERT · ${dashboardState.sentimentModel || 'ProsusAI/finbert'}</span>
+      <span class="model-badge qwen ${dashboardState.qwenEnabled ? 'ready' : 'offline'}">
+        Qwen 2.5 · ${dashboardState.qwenEnabled ? 'enriched' : 'not enabled'}
+      </span>
+      <small>${feed?.source || `file updated ${updated}`}</small>
+    `;
+  }
   if (!reviews.length) {
-    container.innerHTML = '<div class="empty-state">No Qwen-enriched news found. Run the news pipeline with Qwen enrichment enabled.</div>';
+    container.innerHTML = '<div class="empty-state">No processed news found. Enable Qwen and run the news pipeline to populate this feed.</div>';
     return;
   }
   container.innerHTML = reviews.map((item) => {
     const score = Number(item.sentiment_final ?? item.raw_score ?? 0);
     const scoreClass = score >= 0.05 ? 'buy' : score <= -0.05 ? 'sell' : 'neutral';
     const summary = item.qwen_summary || item.summary_text || 'No summary available';
+    const finbertPos = Number(item.finbert_agg_p_pos ?? item.agg_p_pos ?? 0);
+    const finbertNeg = Number(item.finbert_agg_p_neg ?? item.agg_p_neg ?? 0);
+    const finbertNeu = Number(item.finbert_agg_p_neu ?? item.agg_p_neu ?? 0);
     return `
       <article class="news-review ${scoreClass}">
         <div class="news-review-head">
@@ -331,7 +397,7 @@ function renderNewsReviews() {
           <div><span>Event</span><strong>${item.qwen_event || 'Not extracted'}</strong></div>
           <div><span>Signal explanation</span><strong>${item.qwen_signal_explanation || 'Not generated'}</strong></div>
           <div><span>Qwen rationale</span><strong>${item.qwen_rationale || 'Not generated'}</strong></div>
-          <div><span>FinBERT probabilities</span><strong>POS ${(Number(item.agg_p_pos || 0) * 100).toFixed(1)}% · NEG ${(Number(item.agg_p_neg || 0) * 100).toFixed(1)}% · NEU ${(Number(item.agg_p_neu || 0) * 100).toFixed(1)}%</strong></div>
+          <div><span>FinBERT probabilities</span><strong>POS ${(finbertPos * 100).toFixed(1)}% · NEG ${(finbertNeg * 100).toFixed(1)}% · NEU ${(finbertNeu * 100).toFixed(1)}%</strong></div>
         </div>
       </article>
     `;
@@ -463,12 +529,13 @@ async function fetchMarket(symbol = selectedSymbol, period = selectedPeriod) {
   fetchNewsReviews(selectedSymbol);
   const notice = document.getElementById('chartNotice');
   try {
-    const response = await fetch(`/api/market?symbol=${encodeURIComponent(selectedSymbol)}&period=${period}&ts=${Date.now()}`, { cache: 'no-store' });
+    let response = await fetch(`/api/market?symbol=${encodeURIComponent(selectedSymbol)}&period=${period}&ts=${Date.now()}`, { cache: 'no-store' });
+    if (!response.ok) {
+      response = await fetch(`/api/market/live?symbol=${encodeURIComponent(selectedSymbol)}&ts=${Date.now()}`, { cache: 'no-store' });
+    }
     if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
     const market = await response.json();
-    const quotePrice = market.last.toFixed(4);
-    document.getElementById('orderStop').value = quotePrice;
-    document.getElementById('orderTarget').value = quotePrice;
+    liveQuotes[market.symbol] = market.last;
     dashboardState.candles = market.candles;
     document.getElementById('chartSymbol').textContent = market.symbol;
     document.getElementById('orderSymbol').value = market.symbol;
@@ -485,7 +552,17 @@ async function fetchNewsReviews(symbol = selectedSymbol) {
     const response = await fetch(`/api/dashboard?symbol=${encodeURIComponent(symbol)}&ts=${Date.now()}`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
+    dashboardState = { ...dashboardState, ...payload };
+    baselineTotalValue = Number(payload.totalValue) || baselineTotalValue;
     dashboardState.newsReviews = payload.newsReviews || [];
+    if (!dashboardState.newsReviews.length) {
+      const latestResponse = await fetch(`/api/news/latest?symbol=${encodeURIComponent(symbol)}&ts=${Date.now()}`, { cache: 'no-store' });
+      if (latestResponse.ok) {
+        const latest = await latestResponse.json();
+        dashboardState.newsReviews = latest.newsReviews || [];
+        dashboardState.newsFeedStatus = latest;
+      }
+    }
     if (typeof payload.selectedSentiment === 'number') {
       dashboardState.sentiment = payload.selectedSentiment;
       renderStats();
@@ -503,16 +580,28 @@ async function refreshLiveQuote() {
     const response = await fetch(`/api/market/live?symbol=${encodeURIComponent(selectedSymbol)}&ts=${Date.now()}`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const market = await response.json();
+    if (selectedPeriod === 'D1') {
+      const current = dashboardState.candles?.[dashboardState.candles.length - 1];
+      if (current) {
+        current.c = market.last;
+        current.h = Math.max(current.h, market.last);
+        current.l = Math.min(current.l, market.last);
+      }
+      drawCandles();
+    }
     const position = (dashboardState.positions || []).find((item) => item.symbol === market.symbol);
     if (position) {
+      if (!position.entryPrice) position.entryPrice = position.price;
       position.price = market.last;
       position.change = market.change;
-      renderPositions();
     }
+    recalculateLivePortfolio();
+    renderPositions();
     document.getElementById('chartSymbol').textContent = `${market.symbol} · ${selectedPeriod}`;
     document.getElementById('chartNotice').textContent =
       `${market.symbol} · live quote ${market.last.toFixed(2)} · ${pct(market.change)} · ${selectedPeriod} chart · updated ${new Date().toLocaleTimeString()}`;
     renderStats();
+    renderHistory();
   } catch (error) {
     console.warn('Live quote unavailable:', error);
   } finally {
@@ -531,6 +620,7 @@ async function refreshWatchlistQuotes() {
         const quote = await response.json();
         item.last = quote.last;
         item.change = quote.change;
+        liveQuotes[item.symbol] = quote.last;
       } catch (error) {
         console.warn(`Quote unavailable for ${item.symbol}:`, error);
       }
@@ -538,6 +628,10 @@ async function refreshWatchlistQuotes() {
     renderWatchlist();
     renderTicker();
     renderMarketClock();
+    recalculateLivePortfolio();
+    renderStats();
+    renderPositions();
+    renderHistory();
     } finally {
       watchlistQuotesInFlight = false;
     }
@@ -666,6 +760,13 @@ async function fetchDashboard() {
       dashboardState.history = [...(orderPayload.orders || []), ...(dashboardState.history || [])]
         .filter((item, index, items) => !item.id || items.findIndex((candidate) => candidate.id === item.id) === index);
     }
+    // Populate initial liveQuotes from positions and watchlist
+    (dashboardState.positions || []).forEach((pos) => {
+      liveQuotes[pos.symbol] = pos.price;
+    });
+    (dashboardState.watchlist || []).forEach((item) => {
+      liveQuotes[item.symbol] = item.last;
+    });
   } catch (error) {
     console.warn('Dashboard API unavailable, using local demo state:', error);
   } finally {
@@ -675,6 +776,7 @@ async function fetchDashboard() {
 }
 
 function refreshDashboard() {
+  recalculateLivePortfolio();
   renderStats();
   renderPortfolioStatus();
   renderPositions();
@@ -713,13 +815,31 @@ document.addEventListener('DOMContentLoaded', () => {
     renderMarketClock();
     refreshLiveQuote();
     refreshWatchlistQuotes();
-    if (refreshTick % 5 === 0) {
+    if (refreshTick % 30 === 0) {
       fetchDashboard();
       fetchSystemStatus();
+      fetchNewsReviews(selectedSymbol);
     }
   }, 1000);
 
   document.getElementById('refreshBtn').addEventListener('click', refreshAll);
+  document.getElementById('runNewsBtn').addEventListener('click', async () => {
+    const button = document.getElementById('runNewsBtn');
+    button.disabled = true;
+    button.textContent = 'RUNNING...';
+    try {
+      const response = await fetch('/run-news?limit=5', { cache: 'no-store' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      await refreshAll();
+    } catch (error) {
+      document.getElementById('newsReviews').innerHTML =
+        `<div class="empty-state">News pipeline failed: ${error.message}</div>`;
+    } finally {
+      button.disabled = false;
+      button.textContent = 'RUN NEWS';
+    }
+  });
   document.getElementById('historyList').addEventListener('click', async (event) => {
     const button = event.target.closest('.cancel-order');
     if (!button) return;

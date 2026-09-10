@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tyche Trading Desk</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="scene">
+      <div class="ticker-ribbon panel">
+        <div id="tickerTrack" class="ticker-track"></div>
+      </div>
+
+      <div class="app-shell">
+        <aside class="side-panel panel glow">
+          <div class="brand-row">
+            <div class="brand-mark">T</div>
+            <div><p class="eyebrow">Quant Desk</p><h1>Tyche</h1></div>
+          </div>
+          <div class="account-box reveal">
+            <div class="label-row"><span>Demo account</span><span class="status-pill live">Live</span></div>
+            <h2 id="accountBalance">$0</h2>
+            <p>Buying power: <strong id="buyingPower">$0</strong></p>
+          </div>
+          <div class="nav-list reveal">
+            <button class="nav active" data-target="overview">Overview</button>
+            <button class="nav" data-target="portfolio">Portfolio</button>
+            <button class="nav" data-target="signals">Signals</button>
+            <button class="nav" data-target="history">History</button>
+          </div>
+          <div class="mini-panel reveal">
+            <div class="label-row"><span>Risk</span><span id="riskScore">0%</span></div>
+            <div class="meter"><span id="riskMeter"></span></div>
+          </div>
+          <div class="mini-panel reveal">
+            <div class="label-row"><span>Market pulse</span><span class="pulse-green">Bullish</span></div>
+            <ul class="signal-list">
+              <li><span>Trend</span><strong id="sideTrend">--</strong></li>
+              <li><span>Vol</span><strong id="sideVolatility">--</strong></li>
+              <li><span>Beta</span><strong id="sideBeta">N/A</strong></li>
+            </ul>
+          </div>
+        </aside>
+
+        <main class="main-panel">
+          <header class="topbar panel glow reveal">
+            <div>
+              <p class="eyebrow">TYCHE <span class="terminal-green">LIVE</span> - EQUITY MONITOR</p>
+              <h2>Portfolio performance <span class="terminal-code">PORT</span></h2>
+              <p id="portfolioStatus" class="portfolio-status">Backtest status: loading</p>
+            </div>
+            <div class="terminal-meta">
+              <span id="marketClock">--:--:--</span><span>USD</span><span class="terminal-green">MARKET OPEN</span>
+            </div>
+            <div class="topbar-actions">
+              <button class="secondary-btn" id="refreshBtn">RELOAD</button>
+              <button class="primary-btn" id="tradeBtn">ORDER TICKET</button>
+            </div>
+          </header>
+
+          <section id="overview" class="stats-grid reveal-group">
+            <article class="stat-card panel glow reveal-item"><p>Total value</p><h3 id="totalValue">$0</h3><span class="trend positive" id="totalTrend">+0.0%</span></article>
+            <article class="stat-card panel glow reveal-item"><p>Net P&amp;L</p><h3 id="pnlValue">$0</h3><span class="trend positive" id="pnlTrend">+0.0%</span></article>
+            <article class="stat-card panel glow reveal-item"><p>Cash</p><h3 id="cashValue">$0</h3><span class="trend neutral">Ready to deploy</span></article>
+            <article class="stat-card panel glow reveal-item"><p>Sentiment score</p><h3 id="sentimentValue">0.00</h3><span class="trend positive" id="sentimentTrend">Bullish</span></article>
+          </section>
+
+          <section class="monitor-grid reveal-group">
+            <article class="panel glow monitor-panel reveal-item">
+              <div class="section-header"><div><p class="eyebrow">System</p><h3>Monitoring</h3></div></div>
+              <div class="monitor-list">
+                <div class="monitor-item"><span>Data feed</span><strong id="dataHealthStatus" class="status-pill status-good">Healthy</strong><small id="dataHealthDetail">pricing and sentiment online</small></div>
+                <div class="monitor-item"><span>Backtest</span><strong id="portfolioHealthStatus" class="status-pill status-warning">Pending</strong><small id="portfolioHealthDetail">run /run-portfolio to generate metrics</small></div>
+                <div class="monitor-item"><span>Execution</span><strong id="executionHealthStatus" class="status-pill status-good">Paper</strong><small id="executionHealthDetail">autonomous paper mode available</small></div>
+                <div class="monitor-item"><span>Broker</span><strong id="brokerHealthStatus" class="status-pill status-neutral">Idle</strong><small id="brokerHealthDetail">Alpaca + IBKR status</small></div>
+              </div>
+            </article>
+          </section>
+
+          <section id="portfolio" class="chart-grid reveal-group">
+            <article class="panel glow chart-panel reveal-item">
+              <div class="section-header">
+                <div><p class="eyebrow">Performance</p><h3><span id="chartSymbol">AAPL</span> / USD</h3></div>
+                <div class="chart-controls">
+                  <select id="chartType" class="chart-select" aria-label="Chart type"><option value="candles">Candles</option><option value="bars">OHLC bars</option></select>
+                  <button class="chart-tool active" data-chart-tool="grid">Grid</button>
+                  <button class="chart-tool active" data-chart-tool="ma">MA20</button>
+                  <button class="chart-tool active" data-chart-tool="crosshair">Crosshair</button>
+                  <button class="timeframe active" data-timeframe="D1">D1</button><button class="timeframe" data-timeframe="W1">W1</button><button class="timeframe" data-timeframe="MN1">MN1</button>
+                </div>
+              </div>
+              <div id="chartNotice" class="chart-notice">Loading market candles...</div>
+              <div class="chart-stage"><canvas id="candlestickChart" width="820" height="320"></canvas></div>
+              <div class="chart-footer"><span id="chartOhlc">O: -- H: -- L: -- C: --</span><span id="chartIndicatorStatus">Indicators: ready</span></div>
+            </article>
+            <article class="panel glow chart-panel compact-panel reveal-item">
+              <div class="section-header"><div><p class="eyebrow">Allocation</p><h3>Sector mix</h3></div></div>
+              <canvas id="sectorChart" width="320" height="280"></canvas>
+            </article>
+          </section>
+
+          <section class="bottom-grid reveal-group">
+            <article id="signals" class="panel glow list-panel reveal-item"><div class="section-header"><div><p class="eyebrow">Positions</p><h3>Open trades</h3></div></div><div id="positionsList" class="positions-list"></div></article>
+            <article id="history" class="panel glow list-panel reveal-item"><div class="section-header"><div><p class="eyebrow">History</p><h3>Recent activity</h3></div></div><div id="historyList" class="history-list"></div></article>
+          </section>
+
+          <section class="terminal-grid">
+            <article class="panel glow list-panel"><div class="section-header"><div><p class="eyebrow">Watchlist</p><h3>Market tape</h3></div></div><div id="watchlist" class="watchlist"></div></article>
+           <article class="panel glow list-panel">
+             <div class="section-header"><div><p class="eyebrow">Research</p><h3>Live news sentiment</h3></div><button id="runNewsBtn" class="secondary-btn">RUN NEWS</button></div>
+             <div id="sentimentMeta" class="sentiment-meta"></div>
+             <div id="newsReviews" class="news-reviews"></div>
+           </article>
+          </section>
+          <div id="heatmap" class="heatmap" aria-hidden="true"></div>
+        </main>
+      </div>
+    </div>
+
+    <div id="orderModal" class="modal" hidden>
+      <div class="modal-card panel glow">
+        <button id="closeModal" class="modal-close" aria-label="Close">&times;</button>
+        <p class="eyebrow">Order ticket</p>
+        <div class="order-toggle">
+          <button class="side active" data-side="Buy">Buy</button>
+          <button class="side" data-side="Sell">Sell</button>
+        </div>
+        <label>Symbol <input id="orderSymbol" value="AAPL" /></label>
+        <label>Quantity <input id="orderQuantity" type="number" min="1" value="1" /></label>
+        <h2><span id="modalSide">Buy</span> <span id="modalQuantity">0</span> <span id="modalSymbol">AAPL</span></h2>
+        <p id="modalMargin">Market fill</p>
+        <button id="ticketBtn" class="primary-btn">Review order</button>
+        <button class="modal-confirm primary-btn" type="button">Confirm order</button>
+        <button class="modal-cancel secondary-btn" type="button">Cancel</button>
+      </div>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

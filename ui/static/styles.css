@@ -221,6 +221,42 @@ body::before {
   overflow-y: auto;
 }
 
+.sentiment-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.sentiment-meta small {
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+
+.model-badge {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 4px 6px;
+  color: var(--muted-strong);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+}
+
+.model-badge.finbert {
+  border-color: rgba(240, 164, 0, 0.45);
+  color: var(--amber);
+}
+
+.model-badge.qwen.ready {
+  border-color: rgba(66, 209, 123, 0.45);
+  color: var(--green);
+}
+
+.model-badge.qwen.offline {
+  color: var(--muted);
+}
+
 .news-review {
   border: 1px solid var(--line);
   border-left: 3px solid var(--muted);
