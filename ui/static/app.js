@@ -202,6 +202,31 @@ function setHealthStatus(id, label, tone, detail) {
   }
 }
 
+function updateExecutionControls(paper) {
+  const running = Boolean(paper?.running);
+  const halted = Boolean(paper?.halted);
+  const start = document.getElementById('paperStartBtn');
+  const stop = document.getElementById('paperStopBtn');
+  const halt = document.getElementById('executionHaltBtn');
+  const resume = document.getElementById('executionResumeBtn');
+  if (start) start.disabled = running || halted;
+  if (stop) stop.disabled = !running;
+  if (halt) halt.disabled = halted;
+  if (resume) resume.disabled = !halted;
+}
+
+async function postAction(url, body = {}) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    cache: 'no-store',
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+  return result;
+}
+
 async function fetchSystemStatus() {
   try {
     const [healthResp, executionResp, brokerResp, portfolioResp] = await Promise.allSettled([
@@ -241,6 +266,7 @@ async function fetchSystemStatus() {
       executionTone,
       paper.lastAction || 'autonomous paper mode available'
     );
+    updateExecutionControls(paper);
 
     const brokerState = broker && broker.alpaca && broker.alpaca.configured ? 'Ready' : 'Idle';
     const brokerTone = broker && broker.alpaca && broker.alpaca.configured ? 'good' : 'neutral';
@@ -255,6 +281,7 @@ async function fetchSystemStatus() {
     setHealthStatus('portfolioHealthStatus', 'Pending', 'warning', 'run /run-portfolio to generate metrics');
     setHealthStatus('executionHealthStatus', 'Paper', 'neutral', 'autonomous paper mode available');
     setHealthStatus('brokerHealthStatus', 'Idle', 'neutral', 'Alpaca + IBKR disconnected');
+    updateExecutionControls({});
   }
 }
 
@@ -366,8 +393,11 @@ function renderNewsReviews() {
       ? new Date(dashboardState.sentimentUpdatedAt).toLocaleTimeString()
       : 'not available';
     const feed = dashboardState.newsFeedStatus;
+    const backend = dashboardState.sentimentBackend === 'local-lexicon'
+      ? 'Local lexicon'
+      : (dashboardState.sentimentBackend || 'FinBERT');
     meta.innerHTML = `
-      <span class="model-badge finbert">FinBERT · ${dashboardState.sentimentModel || 'ProsusAI/finbert'}</span>
+      <span class="model-badge finbert">${backend} · ${dashboardState.sentimentModel || 'ProsusAI/finbert'}</span>
       <span class="model-badge qwen ${dashboardState.qwenEnabled ? 'ready' : 'offline'}">
         Qwen 2.5 · ${dashboardState.qwenEnabled ? 'enriched' : 'not enabled'}
       </span>
@@ -402,6 +432,71 @@ function renderNewsReviews() {
       </article>
     `;
   }).join('');
+}
+
+function drawSectorMix() {
+  const canvas = document.getElementById('sectorChart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const sectors = (dashboardState.sectorMix || [])
+    .map((sector) => ({ label: String(sector.label || 'Other'), value: Number(sector.value) }))
+    .filter((sector) => Number.isFinite(sector.value) && sector.value >= 0);
+  const width = Math.max(280, Math.floor(canvas.clientWidth || canvas.width));
+  const height = 280;
+  canvas.width = width;
+  canvas.height = height;
+  ctx.clearRect(0, 0, width, height);
+
+  if (!sectors.length || sectors.reduce((sum, sector) => sum + sector.value, 0) <= 0) {
+    ctx.fillStyle = '#849197';
+    ctx.font = '12px Consolas';
+    ctx.fillText('No allocation data available', 20, 32);
+    return;
+  }
+
+  const colors = ['#42d17b', '#45a3ff', '#f0a400', '#bd7bff', '#849197', '#f0605f'];
+  const total = sectors.reduce((sum, sector) => sum + sector.value, 0);
+  const meta = document.getElementById('sectorMeta');
+  if (meta) meta.textContent = `${sectors.length} buckets · ${Math.round(total)}% allocated`;
+  const centerX = Math.min(100, width * 0.31);
+  const centerY = 128;
+  const radius = 72;
+  let startAngle = -Math.PI / 2;
+
+  sectors.forEach((sector, index) => {
+    const slice = (sector.value / total) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(centerX, centerY);
+    ctx.arc(centerX, centerY, radius, startAngle, startAngle + slice);
+    ctx.closePath();
+    ctx.fillStyle = colors[index % colors.length];
+    ctx.fill();
+    startAngle += slice;
+  });
+
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, radius * 0.56, 0, Math.PI * 2);
+  ctx.fillStyle = '#080b0c';
+  ctx.fill();
+  ctx.fillStyle = '#f5f7f8';
+  ctx.font = 'bold 15px Consolas';
+  ctx.textAlign = 'center';
+  ctx.fillText(`${Math.round(total)}%`, centerX, centerY + 5);
+  ctx.textAlign = 'left';
+
+  const legendX = Math.min(width * 0.52, 165);
+  sectors.forEach((sector, index) => {
+    const y = 42 + index * 34;
+    ctx.fillStyle = colors[index % colors.length];
+    ctx.fillRect(legendX, y - 10, 10, 10);
+    ctx.fillStyle = '#d8e0e4';
+    ctx.font = '12px Consolas';
+    ctx.fillText(sector.label, legendX + 18, y);
+    ctx.fillStyle = '#849197';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${((sector.value / total) * 100).toFixed(0)}%`, width - 12, y);
+    ctx.textAlign = 'left';
+  });
 }
 
 function drawCandles() {
@@ -680,6 +775,8 @@ function bindOrderActions() {
     button.addEventListener('click', () => {
         document.querySelectorAll('.order-toggle .side').forEach((b) => b.classList.remove('active'));
       button.classList.add('active');
+      document.querySelector('.modal-confirm').textContent =
+        button.dataset.side === 'Sell' ? 'Close order' : 'Confirm buy';
     });
   });
   document.getElementById('watchlist').addEventListener('click', (event) => {
@@ -687,12 +784,17 @@ function bindOrderActions() {
       if (button) fetchMarket(button.dataset.symbol, selectedPeriod);
   });
 
-  document.getElementById('tradeBtn').addEventListener('click', () => {
-    openModal();
+  document.getElementById('buyBtn').addEventListener('click', () => {
+    openModal({ side: 'Buy', symbol: selectedSymbol });
   });
 
-  document.getElementById('ticketBtn').addEventListener('click', () => {
-    openModal();
+  document.getElementById('closeOrderBtn').addEventListener('click', () => {
+    const position = (dashboardState.positions || []).find((item) => item.symbol === selectedSymbol);
+    if (!position) {
+      window.alert(`No open ${selectedSymbol} position to close.`);
+      return;
+    }
+    openModal({ side: 'Sell', symbol: position.symbol, quantity: position.quantity });
   });
 
   document.getElementById('closeModal').addEventListener('click', () => closeModal());
@@ -724,22 +826,28 @@ function bindOrderActions() {
   document.querySelector('.modal-cancel').addEventListener('click', closeModal);
 }
 
-function openModal() {
+function openModal({ side = 'Buy', symbol = selectedSymbol, quantity = 1 } = {}) {
   const modal = document.getElementById('orderModal');
-  const side = document.querySelector('.order-toggle .side.active').dataset.side;
-  const symbol = document.getElementById('orderSymbol').value.trim().toUpperCase();
-  const quantity = Number(document.getElementById('orderQuantity').value) || 0;
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  const sideButton = document.querySelector(`.order-toggle .side[data-side="${side}"]`);
+  document.querySelectorAll('.order-toggle .side').forEach((button) => button.classList.remove('active'));
+  sideButton?.classList.add('active');
+  document.getElementById('orderSymbol').value = normalizedSymbol;
+  document.getElementById('orderQuantity').value = quantity;
   document.getElementById('modalSide').textContent = side;
-  document.getElementById('modalQuantity').textContent = quantity.toFixed(2);
-  document.getElementById('modalSymbol').textContent = symbol;
+  document.getElementById('modalQuantity').textContent = Number(quantity).toFixed(2);
+  document.getElementById('modalSymbol').textContent = normalizedSymbol;
   document.getElementById('modalMargin').textContent = 'Market fill';
+  document.querySelector('.modal-confirm').textContent = side === 'Sell' ? 'Close order' : 'Confirm buy';
   modal.classList.remove('hidden');
+  modal.removeAttribute('hidden');
   modal.setAttribute('aria-hidden', 'false');
 }
 
 function closeModal() {
   const modal = document.getElementById('orderModal');
   modal.classList.add('hidden');
+  modal.setAttribute('hidden', '');
   modal.setAttribute('aria-hidden', 'true');
 }
 
@@ -785,6 +893,7 @@ function refreshDashboard() {
   renderTicker();
   renderHeatmap();
   renderNewsReviews();
+  drawSectorMix();
   drawCandles();
 }
 
@@ -852,6 +961,43 @@ document.addEventListener('DOMContentLoaded', () => {
     await fetchDashboard();
   });
 
+  document.getElementById('runBacktestBtn').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = 'RUNNING...';
+    try {
+      await postAction('/run-portfolio', { holding: 5 });
+      await Promise.all([fetchDashboard(), fetchSystemStatus()]);
+    } catch (error) {
+      document.getElementById('portfolioHealthDetail').textContent = `Backtest failed: ${error.message}`;
+    } finally {
+      button.disabled = false;
+      button.textContent = 'RUN BACKTEST';
+    }
+  });
+
+  const executionActions = [
+    ['paperStartBtn', '/api/paper/start', 'START PAPER'],
+    ['paperStopBtn', '/api/paper/stop', 'STOP PAPER'],
+    ['executionHaltBtn', '/api/execution/halt', 'HALT'],
+    ['executionResumeBtn', '/api/execution/resume', 'RESUME'],
+  ];
+  executionActions.forEach(([id, url, label]) => {
+    document.getElementById(id).addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        await postAction(url);
+        await fetchSystemStatus();
+      } catch (error) {
+        document.getElementById('executionHealthDetail').textContent = `Execution action failed: ${error.message}`;
+        updateExecutionControls({});
+      } finally {
+        button.textContent = label;
+      }
+    });
+  });
+
   async function refreshAll() {
     const button = document.getElementById('refreshBtn');
     button.disabled = true;
@@ -872,5 +1018,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  window.addEventListener('resize', drawCandles);
+  window.addEventListener('resize', () => {
+    drawCandles();
+    drawSectorMix();
+  });
 });

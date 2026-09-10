@@ -325,6 +325,7 @@ body::before {
 
 .primary-btn,
 .secondary-btn,
+.danger-btn,
 .ticket-btn,
 .side,
 .timeframe,
@@ -343,6 +344,18 @@ body::before {
 }
 
 .secondary-btn { padding: 8px 10px; }
+
+.danger-btn {
+  padding: 8px 10px;
+  color: #111;
+  background: var(--red);
+  border-color: var(--red);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
 
 .stats-grid,
 .analytics-grid { gap: 6px; }
@@ -380,6 +393,13 @@ body::before {
 .section-header {
   padding-bottom: 7px;
   border-bottom: 1px solid var(--line);
+}
+
+.monitor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
 }
 
 .section-header h3 {
@@ -1123,9 +1143,24 @@ canvas {
   display: none;
 }
 
+#orderModal[hidden] {
+  display: none;
+}
+
 .modal-card {
   width: min(440px, calc(100% - 32px));
   padding: 22px 18px;
+}
+
+.sector-chart {
+  height: 280px;
+}
+
+#sectorMeta {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.62rem;
 }
 
 .modal-header {

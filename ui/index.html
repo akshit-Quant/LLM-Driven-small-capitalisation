@@ -55,7 +55,8 @@
             </div>
             <div class="topbar-actions">
               <button class="secondary-btn" id="refreshBtn">RELOAD</button>
-              <button class="primary-btn" id="tradeBtn">ORDER TICKET</button>
+              <button class="primary-btn" id="buyBtn">BUY</button>
+              <button class="secondary-btn" id="closeOrderBtn">CLOSE ORDER</button>
             </div>
           </header>
 
@@ -74,6 +75,13 @@
                 <div class="monitor-item"><span>Backtest</span><strong id="portfolioHealthStatus" class="status-pill status-warning">Pending</strong><small id="portfolioHealthDetail">run /run-portfolio to generate metrics</small></div>
                 <div class="monitor-item"><span>Execution</span><strong id="executionHealthStatus" class="status-pill status-good">Paper</strong><small id="executionHealthDetail">autonomous paper mode available</small></div>
                 <div class="monitor-item"><span>Broker</span><strong id="brokerHealthStatus" class="status-pill status-neutral">Idle</strong><small id="brokerHealthDetail">Alpaca + IBKR status</small></div>
+              </div>
+              <div class="monitor-actions">
+                <button id="runBacktestBtn" class="secondary-btn">RUN BACKTEST</button>
+                <button id="paperStartBtn" class="secondary-btn">START PAPER</button>
+                <button id="paperStopBtn" class="secondary-btn">STOP PAPER</button>
+                <button id="executionHaltBtn" class="danger-btn">HALT</button>
+                <button id="executionResumeBtn" class="secondary-btn">RESUME</button>
               </div>
             </article>
           </section>
@@ -95,8 +103,8 @@
               <div class="chart-footer"><span id="chartOhlc">O: -- H: -- L: -- C: --</span><span id="chartIndicatorStatus">Indicators: ready</span></div>
             </article>
             <article class="panel glow chart-panel compact-panel reveal-item">
-              <div class="section-header"><div><p class="eyebrow">Allocation</p><h3>Sector mix</h3></div></div>
-              <canvas id="sectorChart" width="320" height="280"></canvas>
+              <div class="section-header"><div><p class="eyebrow">Allocation</p><h3>Sector mix</h3><small id="sectorMeta">Portfolio allocation</small></div></div>
+              <canvas id="sectorChart" class="sector-chart" width="320" height="280"></canvas>
             </article>
           </section>
 
@@ -118,13 +126,13 @@
       </div>
     </div>
 
-    <div id="orderModal" class="modal" hidden>
+    <div id="orderModal" class="modal hidden" hidden>
       <div class="modal-card panel glow">
         <button id="closeModal" class="modal-close" aria-label="Close">&times;</button>
         <p class="eyebrow">Order ticket</p>
         <div class="order-toggle">
           <button class="side active" data-side="Buy">Buy</button>
-          <button class="side" data-side="Sell">Sell</button>
+          <button class="side" data-side="Sell">Close order</button>
         </div>
         <label>Symbol <input id="orderSymbol" value="AAPL" /></label>
         <label>Quantity <input id="orderQuantity" type="number" min="1" value="1" /></label>

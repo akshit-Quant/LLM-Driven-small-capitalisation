@@ -16,7 +16,9 @@ import json
 import math
 import mimetypes
 import os
+import re
 import sys
+from threading import Lock
 import time
 import uuid
 from datetime import datetime, timezone
@@ -35,6 +37,7 @@ load_dotenv(ROOT / ".env")
 ORDERS: list[dict[str, Any]] = []
 _BETA_CACHE: dict[str, tuple[float, float | None]] = {}
 _NEWS_CACHE: tuple[float, dict[str, Any]] | None = None
+_FINBERT_SCORE_LOCK = Lock()
 ORDERS_PATH = ROOT / "data" / "output" / "simulated_orders.json"
 if ORDERS_PATH.exists():
     try:
@@ -134,6 +137,7 @@ def _dashboard_fallback() -> dict[str, Any]:
         "qwenEnabled": os.environ.get("TYCHE_QWEN_ENRICHMENT_ENABLED", "false").lower() == "true",
         "qwenModel": os.environ.get("TYCHE_QWEN_MODEL", "qwen2.5:3b"),
         "sentimentUpdatedAt": None,
+        "newsReviews": [],
         "trend": 3.42,
         "positions": [
             {"symbol": "NVDA", "name": "NVIDIA", "quantity": 36, "price": 132.6, "entryPrice": 132.6, "change": 2.84},
@@ -158,6 +162,83 @@ def _dashboard_fallback() -> dict[str, Any]:
     }
 
 
+_POSITIVE_NEWS_TERMS = {
+    "approval", "approved", "beat", "beats", "bullish", " contract", "gain",
+    "growth", "improve", "improves", "launch", "outperform", "partnership",
+    "profit", "positive", "record", "raised", "strong", "surge", "upgrade",
+}
+_NEGATIVE_NEWS_TERMS = {
+    "bearish", "crash", "cut", "decline", "delay", "downgrade", "fall",
+    "fraud", "investigation", "lawsuit", "layoff", "loss", "miss", "negative",
+    "penalty", "recall", "risk", "weak", "warning",
+}
+
+
+def _local_news_sentiment(text: str) -> dict[str, float]:
+    """Provide a visible local score when FinBERT output is unavailable."""
+    normalized = str(text).lower()
+    tokens = set(re.findall(r"[a-z]+", normalized))
+    positive = sum(term.strip() in tokens for term in _POSITIVE_NEWS_TERMS)
+    negative = sum(term.strip() in tokens for term in _NEGATIVE_NEWS_TERMS)
+    score = max(-1.0, min(1.0, (positive - negative) * 0.18))
+    confidence = min(0.82, 0.34 + abs(score) * 0.4)
+    neutral = 1.0 - confidence
+    if score > 0:
+        probabilities = (confidence, neutral * 0.35, neutral * 0.65)
+    elif score < 0:
+        probabilities = (neutral * 0.35, confidence, neutral * 0.65)
+    else:
+        probabilities = (0.3, 0.3, 0.4)
+    return {
+        "sentiment_final": round(score, 4),
+        "raw_score": round(score, 4),
+        "agg_p_pos": round(probabilities[0], 4),
+        "agg_p_neg": round(probabilities[1], 4),
+        "agg_p_neu": round(probabilities[2], 4),
+    }
+
+
+def _apply_fallback_sentiment(fallback: dict[str, Any], symbol: str | None) -> dict[str, Any]:
+    latest = _read_latest_news(symbol)
+    reviews = latest.get("newsReviews", [])
+    scores = [float(item.get("sentiment_final", 0.0)) for item in reviews]
+    if not scores:
+        return fallback
+    fallback["newsReviews"] = reviews
+    fallback["sentiment"] = round(sum(scores) / len(scores), 2)
+    fallback["selectedSentiment"] = fallback["sentiment"]
+    fallback["sentimentBackend"] = latest.get("sentimentBackend", "local-lexicon")
+    fallback["sentimentModel"] = latest.get("sentimentModel", "local-news-lexicon")
+    fallback["sentimentUpdatedAt"] = latest.get("updatedAt")
+    fallback["newsFeedStatus"] = latest
+    return fallback
+
+
+def _score_live_news_with_finbert(rows: list[dict[str, Any]]) -> bool:
+    texts = [str(row.get("summary_text", "")).strip() for row in rows]
+    if not any(texts):
+        return False
+    try:
+        from tyche.news.service.sentiment import get_backend
+
+        with _FINBERT_SCORE_LOCK:
+            scored = get_backend("finbert").score_unique(texts)
+        for row, text in zip(rows, texts):
+            pos, neg, neu, _ = scored[text]
+            row.update(
+                {
+                    "sentiment_final": round(pos - neg, 4),
+                    "raw_score": round(pos - neg, 4),
+                    "agg_p_pos": round(pos, 4),
+                    "agg_p_neg": round(neg, 4),
+                    "agg_p_neu": round(neu, 4),
+                }
+            )
+        return True
+    except (ImportError, OSError, RuntimeError, ValueError, KeyError):
+        return False
+
+
 def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
     fallback = _dashboard_fallback()
     if ORDERS:
@@ -170,12 +251,39 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
     ]
     sentiment_path = next((path for path in candidates if path.exists()), None)
     if sentiment_path is None:
-        return fallback
+        return _apply_fallback_sentiment(fallback, symbol)
 
     try:
         df = pd.read_parquet(sentiment_path)
         if df.empty:
-            return fallback
+            return _apply_fallback_sentiment(fallback, symbol)
+        if "summary_text" in df.columns:
+            score_series = (
+                df["sentiment_final"]
+                if "sentiment_final" in df.columns
+                else pd.Series(0.0, index=df.index)
+            )
+            existing_scores = pd.to_numeric(score_series, errors="coerce").fillna(0.0)
+            if existing_scores.abs().sum() == 0.0:
+                live_rows = [
+                    {"summary_text": text}
+                    for text in df["summary_text"].fillna("").astype(str).tolist()
+                ]
+                scored_by_finbert = _score_live_news_with_finbert(live_rows)
+                if scored_by_finbert:
+                    local_scores = pd.Series(live_rows, index=df.index).map(
+                        lambda item: item
+                    )
+                    fallback["sentimentBackend"] = "finbert"
+                    fallback["sentimentModel"] = os.environ.get(
+                        "TYCHE_SENTIMENT_FINBERT_NAME", "ProsusAI/finbert"
+                    )
+                else:
+                    local_scores = df["summary_text"].fillna("").map(_local_news_sentiment)
+                    fallback["sentimentBackend"] = "local-lexicon"
+                    fallback["sentimentModel"] = "local-news-lexicon"
+                for column in ("sentiment_final", "raw_score", "agg_p_pos", "agg_p_neg", "agg_p_neu"):
+                    df[column] = local_scores.map(lambda item, key=column: item[key])
 
         review_columns = [
             "article_id",
@@ -353,6 +461,16 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
                 sentiment_path.stat().st_mtime, tz=timezone.utc
             ).isoformat(),
         }
+        live_feed = _read_latest_news(symbol)
+        live_reviews = live_feed.get("newsReviews", [])
+        if live_reviews and live_feed.get("sentimentBackend") == "finbert":
+            live_scores = [float(item.get("sentiment_final", 0.0)) for item in live_reviews]
+            payload["newsReviews"] = live_reviews
+            payload["sentiment"] = round(sum(live_scores) / len(live_scores), 2)
+            payload["selectedSentiment"] = payload["sentiment"]
+            payload["sentimentBackend"] = live_feed["sentimentBackend"]
+            payload["sentimentModel"] = live_feed["sentimentModel"]
+            payload["sentimentUpdatedAt"] = live_feed.get("updatedAt")
         payload.update(_demo_account())
         if portfolio["status"] == "ready":
             best = portfolio["best"]
@@ -791,11 +909,19 @@ def _read_latest_news(symbol: str | None = None) -> dict[str, Any]:
                 except (ImportError, ValueError, TypeError, KeyError):
                     pass
         rows.sort(key=lambda item: item["valid_time"], reverse=True)
+        scored_by_finbert = _score_live_news_with_finbert(rows)
+        if not scored_by_finbert:
+            for row in rows:
+                row.update(_local_news_sentiment(row.get("summary_text", "")))
         payload = {
             "newsReviews": rows[:24],
             "source": source,
             "updatedAt": datetime.now(timezone.utc).isoformat(),
             "configured": bool(api_key),
+            "sentimentBackend": "finbert" if scored_by_finbert else "local-lexicon",
+            "sentimentModel": os.environ.get(
+                "TYCHE_SENTIMENT_FINBERT_NAME", "ProsusAI/finbert"
+            ) if scored_by_finbert else "local-news-lexicon",
         }
         _NEWS_CACHE = (now, payload)
     if symbol:
