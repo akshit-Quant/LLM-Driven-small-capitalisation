@@ -11,18 +11,8 @@ let dashboardState = {
     status: 'unavailable',
     message: 'Portfolio backtest not run'
   },
-  positions: [
-    { symbol: 'NVDA', name: 'NVIDIA', quantity: 36, price: 132.6, change: 2.84 },
-    { symbol: 'MSFT', name: 'Microsoft', quantity: 24, price: 418.1, change: 1.67 },
-    { symbol: 'AMD', name: 'AMD', quantity: 52, price: 148.2, change: -0.78 },
-    { symbol: 'AAPL', name: 'Apple', quantity: 18, price: 212.7, change: 0.92 }
-  ],
-  history: [
-    { time: '09:45', side: 'Buy', symbol: 'NVDA', qty: 14, price: 130.8 },
-    { time: '11:12', side: 'Sell', symbol: 'MSFT', qty: 8, price: 410.2 },
-    { time: '13:05', side: 'Buy', symbol: 'AMD', qty: 22, price: 146.9 },
-    { time: '15:42', side: 'Buy', symbol: 'AAPL', qty: 10, price: 210.5 }
-  ],
+  positions: [],
+  history: [],
   watchlist: [
     { symbol: 'NVDA', last: 132.60, change: 2.84, volume: 'Stock' },
     { symbol: 'MSFT', last: 418.10, change: 1.67, volume: 'Stock' },
@@ -264,7 +254,9 @@ async function fetchSystemStatus() {
       'executionHealthStatus',
       executionState,
       executionTone,
-      paper.lastAction || 'autonomous paper mode available'
+      paper.lastAction
+        ? `${paper.signalSource || 'sentiment'} signal · ${paper.lastAction} · risk ${(Number(paper.riskPerTrade || 0.01) * 100).toFixed(1)}%/trade`
+        : `${paper.signalSource || 'sentiment'} signal · autonomous paper mode available`
     );
     updateExecutionControls(paper);
 
@@ -330,7 +322,9 @@ function renderHistory() {
   historyList.innerHTML = dashboardState.history
     .map((trade) => {
       const quote = Number(liveQuotes[trade.symbol] ?? trade.price);
-      const tradePnl = (quote - Number(trade.price)) * (trade.side === 'Buy' ? Number(trade.qty) : -Number(trade.qty));
+      const tradePnl = Number.isFinite(Number(trade.pnl))
+        ? Number(trade.pnl)
+        : (quote - Number(trade.price)) * (trade.side === 'Buy' ? Number(trade.qty) : -Number(trade.qty));
       return `
         <div class="history-row">
           <div>
@@ -344,7 +338,7 @@ function renderHistory() {
           </div>
           <div class="position-value">
             <strong>${trade.status || (trade.side === 'Buy' ? 'Filled' : 'Closed')}</strong>
-            <span class="${valueClass(tradePnl)}">Live P&amp;L ${currency(tradePnl)}</span>
+            <span class="${valueClass(tradePnl)}">${trade.pnlType === 'mark-to-market' ? 'Live' : 'Realized'} P&amp;L ${currency(tradePnl)}</span>
             <span>${trade.status === 'Open' && trade.id ? `<button class="cancel-order" data-order-id="${trade.id}">Cancel</button>` : ''}</span>
           </div>
         </div>
@@ -708,18 +702,31 @@ async function refreshWatchlistQuotes() {
     if (watchlistQuotesInFlight) return;
     watchlistQuotesInFlight = true;
     try {
-    await Promise.all(dashboardState.watchlist.map(async (item) => {
-      try {
-        const response = await fetch(`/api/market/live?symbol=${encodeURIComponent(item.symbol)}`);
-        if (!response.ok) return;
-        const quote = await response.json();
-        item.last = quote.last;
-        item.change = quote.change;
-        liveQuotes[item.symbol] = quote.last;
-      } catch (error) {
-        console.warn(`Quote unavailable for ${item.symbol}:`, error);
-      }
-    }));
+      const trackedSymbols = new Set([
+        ...(dashboardState.watchlist || []).map((item) => item.symbol),
+        ...(dashboardState.positions || []).map((item) => item.symbol)
+      ]);
+      await Promise.all([...trackedSymbols].map(async (symbol) => {
+        try {
+          const response = await fetch(`/api/market/live?symbol=${encodeURIComponent(symbol)}&ts=${Date.now()}`, { cache: 'no-store' });
+          if (!response.ok) return;
+          const quote = await response.json();
+          const item = (dashboardState.watchlist || []).find((entry) => entry.symbol === quote.symbol);
+          if (item) {
+            item.last = quote.last;
+            item.change = quote.change;
+          }
+          const position = (dashboardState.positions || []).find((entry) => entry.symbol === quote.symbol);
+          if (position) {
+            if (!position.entryPrice) position.entryPrice = position.price;
+            position.price = quote.last;
+            position.change = quote.change;
+          }
+          liveQuotes[quote.symbol] = quote.last;
+        } catch (error) {
+          console.warn(`Quote unavailable for ${symbol}:`, error);
+        }
+      }));
     renderWatchlist();
     renderTicker();
     renderMarketClock();

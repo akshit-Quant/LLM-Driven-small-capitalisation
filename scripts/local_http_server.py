@@ -54,18 +54,32 @@ def _save_orders() -> None:
 
 
 def _paper_market_price(symbol: str) -> float:
-    return float(_read_market(symbol, "1D")["last"])
+    try:
+        return float(_read_live_market(symbol)["last"])
+    except (ImportError, requests.RequestException, FileNotFoundError, ValueError, KeyError, IndexError):
+        return float(_read_market(symbol, "1D")["last"])
 
 
 from tyche.execution.paper import PaperAutopilot
 from tyche.execution.alpaca import AlpacaPaperAdapter
+from tyche.portfolio.live import latest_portfolio_signals
 
-PAPER_AUTOPILOT = PaperAutopilot(ROOT, ORDERS, _save_orders, _paper_market_price)
+PAPER_AUTOPILOT = PaperAutopilot(
+    ROOT,
+    ORDERS,
+    _save_orders,
+    _paper_market_price,
+    lambda: _read_latest_news().get("newsReviews", []),
+    lambda: latest_portfolio_signals(ROOT),
+)
 ALPACA = AlpacaPaperAdapter()
 
 
 def _demo_account() -> dict[str, Any]:
-    starting_cash = 100000.0
+    try:
+        starting_cash = float(os.environ.get("TYCHE_PAPER_STARTING_CASH", "100000"))
+    except ValueError:
+        starting_cash = 100000.0
     cash = starting_cash
     positions: dict[str, dict[str, float]] = {}
     for order in ORDERS:
@@ -99,18 +113,48 @@ def _demo_account() -> dict[str, Any]:
             }
         )
     unrealized_pnl = 0.0
+    live_prices: dict[str, float] = {}
     market_value = 0.0
     for row in rows:
         try:
-            current_price = float(_read_market(row["symbol"], "1D")["last"])
-        except (FileNotFoundError, ValueError, KeyError, IndexError):
-            current_price = row["price"]
+            current_price = float(_read_live_market(row["symbol"])["last"])
+        except (ImportError, requests.RequestException, FileNotFoundError, ValueError, KeyError, IndexError):
+            try:
+                current_price = float(_read_market(row["symbol"], "1D")["last"])
+            except (FileNotFoundError, ValueError, KeyError, IndexError):
+                current_price = row["price"]
         average_price = row["price"]
         row["price"] = round(current_price, 2)
+        live_prices[row["symbol"]] = current_price
         market_value += row["quantity"] * current_price
         unrealized_pnl += (current_price - average_price) * row["quantity"]
         row["change"] = round((current_price / average_price - 1.0) * 100.0, 2) if average_price else 0.0
+    open_risk = 0.0
+    for row in rows:
+        symbol_orders = [
+            item for item in ORDERS
+            if str(item.get("symbol", "")).upper() == row["symbol"]
+            and item.get("status") == "Filled"
+            and item.get("stopLoss") is not None
+            and item.get("mode") == "autonomous-paper"
+        ]
+        stop_distances = [
+            abs(float(item["price"]) - float(item["stopLoss"]))
+            for item in symbol_orders
+            if float(item.get("price", 0.0)) > 0
+        ]
+        if stop_distances:
+            open_risk += abs(float(row["quantity"])) * (sum(stop_distances) / len(stop_distances))
+    history = []
+    for order in ORDERS:
+        item = dict(order)
+        current_price = live_prices.get(str(order.get("symbol", "")).upper(), float(order.get("price", 0.0)))
+        signed = 1.0 if order.get("side") == "Buy" else -1.0
+        item["pnl"] = round((current_price - float(order.get("price", 0.0))) * float(order.get("qty", 0.0)) * signed, 2)
+        item["pnlType"] = "mark-to-market"
+        history.append(item)
     total_value = cash + market_value
+    risk_pct = (open_risk / total_value) * 100.0 if total_value else 0.0
     return {
         "accountBalance": round(total_value, 2),
         "buyingPower": round(cash, 2),
@@ -118,40 +162,39 @@ def _demo_account() -> dict[str, Any]:
         "totalValue": round(total_value, 2),
         "pnl": round(total_value - starting_cash, 2),
         "unrealizedPnl": round(unrealized_pnl, 2),
+        "openRisk": round(open_risk, 2),
+        "openRiskPct": round(risk_pct, 2),
         "positions": rows,
-        "history": ORDERS,
+        "history": history,
     }
 
 
-def _dashboard_fallback() -> dict[str, Any]:
+def _dashboard_fallback(symbol: str | None = None) -> dict[str, Any]:
+    try:
+        starting_cash = float(os.environ.get("TYCHE_PAPER_STARTING_CASH", "100000"))
+    except ValueError:
+        starting_cash = 100000.0
     return {
-        "accountBalance": 120000.0,
-        "buyingPower": 54000.0,
-        "totalValue": 142580.0,
-        "pnl": 12842.0,
-        "cash": 26000.0,
-        "riskScore": 72,
+        "accountBalance": starting_cash,
+        "buyingPower": starting_cash,
+        "totalValue": starting_cash,
+        "pnl": 0.0,
+        "cash": starting_cash,
+        "riskScore": 0,
+        "openRisk": 0.0,
+        "openRiskPct": 0.0,
         "sentiment": 0.74,
         "sentimentBackend": os.environ.get("TYCHE_SENTIMENT_BACKENDS", "finbert").split(",")[0].strip(),
         "sentimentModel": os.environ.get("TYCHE_SENTIMENT_FINBERT_NAME", "ProsusAI/finbert"),
         "qwenEnabled": os.environ.get("TYCHE_QWEN_ENRICHMENT_ENABLED", "false").lower() == "true",
         "qwenModel": os.environ.get("TYCHE_QWEN_MODEL", "qwen2.5:3b"),
         "sentimentUpdatedAt": None,
+        "symbol": (symbol or "AAPL").upper(),
         "newsReviews": [],
         "trend": 3.42,
-        "positions": [
-            {"symbol": "NVDA", "name": "NVIDIA", "quantity": 36, "price": 132.6, "entryPrice": 132.6, "change": 2.84},
-            {"symbol": "MSFT", "name": "Microsoft", "quantity": 24, "price": 418.1, "entryPrice": 418.1, "change": 1.67},
-            {"symbol": "AMD", "name": "AMD", "quantity": 52, "price": 148.2, "entryPrice": 148.2, "change": -0.78},
-            {"symbol": "AAPL", "name": "Apple", "quantity": 18, "price": 212.7, "entryPrice": 212.7, "change": 0.92},
-        ],
-        "history": [
-            {"time": "09:45", "side": "Buy", "symbol": "NVDA", "qty": 14, "price": 130.8},
-            {"time": "11:12", "side": "Sell", "symbol": "MSFT", "qty": 8, "price": 410.2},
-            {"time": "13:05", "side": "Buy", "symbol": "AMD", "qty": 22, "price": 146.9},
-            {"time": "15:42", "side": "Buy", "symbol": "AAPL", "qty": 10, "price": 210.5},
-        ],
-        "portfolioSeries": [118000, 119200, 121300, 124500, 126800, 128900, 131200, 136420, 139550, 142580],
+        "positions": [],
+        "history": [],
+        "portfolioSeries": [starting_cash],
         "sectorMix": [
             {"label": "AI", "value": 31},
             {"label": "Cloud", "value": 26},
@@ -159,6 +202,7 @@ def _dashboard_fallback() -> dict[str, Any]:
             {"label": "Hardware", "value": 16},
             {"label": "Cash", "value": 6},
         ],
+        "marketMetrics": _market_signal_metrics(symbol or "AAPL"),
     }
 
 
@@ -240,7 +284,7 @@ def _score_live_news_with_finbert(rows: list[dict[str, Any]]) -> bool:
 
 
 def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
-    fallback = _dashboard_fallback()
+    fallback = _dashboard_fallback(symbol)
     if ORDERS:
         fallback.update(_demo_account())
     portfolio = _read_portfolio_artifact()
@@ -381,51 +425,33 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
         if ticker_summary.empty:
             return fallback
 
-        top_positions = []
-        for _, row in ticker_summary.head(4).iterrows():
-            symbol = str(row["ticker"])
-            sentiment = float(row["sentiment_mean"])
-            qty = max(8, int(abs(sentiment) * 80))
-            price = 80.0 + (abs(sentiment) * 180.0) + (float(row["avg_pos"]) * 80.0)
-            change = round(sentiment * 4.0, 2)
-            top_positions.append(
-                {"symbol": symbol, "name": symbol, "quantity": qty, "price": round(price, 2), "change": change}
-            )
+        # Sentiment ranks are signals, not holdings. Only paper orders create
+        # positions; otherwise showing synthetic quantities is misleading.
+        top_positions = fallback["positions"] if ORDERS else []
 
         avg_sentiment = float(df["sentiment_final"].mean()) if "sentiment_final" in df.columns else 0.0
         sentiment_score = max(-1.0, min(1.0, avg_sentiment))
         bullish_share = float((df["sentiment_final"] > 0).mean()) if "sentiment_final" in df.columns else 0.0
-        risk_score = int(max(18, min(94, round(50 + (1.0 - bullish_share) * 45))))
-        account_balance = 120000.0
-        total_value = account_balance + (sentiment_score * 18000.0) + (bullish_share * 5000.0)
-        pnl = total_value - account_balance
-        buying_power = max(25000.0, 50000.0 + (bullish_share * 6000.0))
-        cash = max(20000.0, buying_power * 0.48)
+        account = _demo_account()
+        account_balance = float(account["accountBalance"])
+        total_value = float(account["totalValue"])
+        pnl = float(account["pnl"])
+        buying_power = float(account["buyingPower"])
+        cash = float(account["cash"])
 
-        history = []
-        for _, row in ticker_summary.head(4).iterrows():
-            side = "Buy" if float(row["sentiment_mean"]) >= 0 else "Sell"
-            history.append(
-                {
-                    "time": pd.Timestamp.now().strftime("%H:%M"),
-                    "side": side,
-                    "symbol": str(row["ticker"]),
-                    "qty": max(6, int(float(row["article_count"]) * 5)),
-                    "price": round(float(row["avg_pos"]) * 150.0 + 90.0, 2),
-                }
-            )
+        history = fallback["history"] if ORDERS else []
 
         trend = round(float(avg_sentiment) * 4.5 + (bullish_share * 2.0), 2)
         portfolio_series = []
         series_seed = float(total_value)
         for idx in range(10):
-            series_seed += (float(idx) - 4.5) * 480.0 + (float(avg_sentiment) * 650.0)
+            series_seed += (float(idx) - 4.5) * max(1.0, abs(pnl) / 10.0)
             portfolio_series.append(int(round(series_seed)))
 
         sector_mix = [
             {"label": "News", "value": max(10, int(bullish_share * 100))},
             {"label": "Momentum", "value": max(12, int((1.0 + avg_sentiment) * 35))},
-            {"label": "Risk", "value": max(10, int(risk_score * 0.45))},
+            {"label": "Risk", "value": max(1, int(float(account.get("openRiskPct", 0.0))))},
             {"label": "Cash", "value": max(6, int((1.0 - bullish_share) * 40))},
         ]
 
@@ -435,7 +461,9 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
             "totalValue": round(total_value, 2),
             "pnl": round(pnl, 2),
             "cash": round(cash, 2),
-            "riskScore": risk_score,
+            "riskScore": round(float(account.get("openRiskPct", 0.0)), 2),
+            "openRisk": account.get("openRisk", 0.0),
+            "openRiskPct": account.get("openRiskPct", 0.0),
             "sentiment": round(sentiment_score, 2),
             "selectedSentiment": round(
                 float(selected_rows["sentiment_final"].mean())
@@ -461,6 +489,11 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
                 sentiment_path.stat().st_mtime, tz=timezone.utc
             ).isoformat(),
         }
+        if ORDERS:
+            for key in ("accountBalance", "buyingPower", "totalValue", "pnl", "cash", "unrealizedPnl"):
+                payload[key] = fallback[key]
+            payload["positions"] = fallback["positions"]
+            payload["history"] = fallback["history"]
         live_feed = _read_latest_news(symbol)
         live_reviews = live_feed.get("newsReviews", [])
         if live_reviews and live_feed.get("sentimentBackend") == "finbert":
@@ -483,9 +516,14 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
             live_series[-1] = float(payload["totalValue"])
             payload["portfolioSeries"] = [round(value, 2) for value in live_series]
             payload["riskMetrics"] = _portfolio_risk_metrics(live_series)
+        payload["symbol"] = (symbol or "AAPL").upper()
         payload["marketMetrics"] = _market_signal_metrics(symbol)
         return payload
     except Exception:
+        # Keep market indicators available even if an optional news provider
+        # fails; the chart/quote path is independent of the news pipeline.
+        fallback["symbol"] = (symbol or "AAPL").upper()
+        fallback["marketMetrics"] = _market_signal_metrics(symbol or "AAPL")
         return fallback
 
 
@@ -1105,6 +1143,12 @@ class TycheHandler(BaseHTTPRequestHandler):
                     raise ValueError("side must be Buy or Sell and quantity must be positive")
                 market = _read_market(symbol, "1D")
                 order = PAPER_AUTOPILOT.record_order(symbol, side, quantity, float(market["last"]))
+                order = PAPER_AUTOPILOT.transition(
+                    order["id"],
+                    "Filled",
+                    filled_time=datetime.now(timezone.utc).isoformat(),
+                    filled_price=order["price"],
+                )
                 self._send_json(201, {"ok": True, "order": order, "orders": ORDERS})
             except (KeyError, ValueError, json.JSONDecodeError) as exc:
                 self._send_json(400, {"ok": False, "error": str(exc)})
