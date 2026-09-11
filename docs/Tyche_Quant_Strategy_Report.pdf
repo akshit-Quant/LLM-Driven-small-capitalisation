@@ -1,0 +1,656 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R 9 0 R 11 0 R 13 0 R 15 0 R 17 0 R 19 0 R] /Count 8 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Length 3318 >>
+stream
+BT
+/F1 16 Tf
+50 760 Td
+/F1 16 Tf (Tyche Quant Strategy and Backtest Analysis) Tj
+0 -15 Td
+/F1 10 Tf (Prepared from the current Tyche source tree. This report explains how the research backtest,) Tj
+0 -15 Td
+/F1 10 Tf (predictive model, portfolio allocation layer, and autonomous paper executor work together, what) Tj
+0 -15 Td
+/F1 10 Tf (they contribute to quantitative finance, and which changes would most improve reliability.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Important scope note: this is a technical and quantitative analysis, not investment advice. The) Tj
+0 -15 Td
+/F1 10 Tf (current broker integration is paper-only unless credentials and an explicitly enabled live) Tj
+0 -15 Td
+/F1 10 Tf (adapter are configured.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -19 Td
+/F1 16 Tf (1. Executive summary) Tj
+0 -15 Td
+/F1 10 Tf (Tyche is a multimodal quantitative research and paper-trading platform. Its research path) Tj
+0 -15 Td
+/F1 10 Tf (combines daily market features and clustered news sentiment, trains a distributional neural) Tj
+0 -15 Td
+/F1 10 Tf (network, estimates predictive uncertainty, converts forecasts into portfolio weights, and) Tj
+0 -15 Td
+/F1 10 Tf (evaluates the result with costs, turnover, exposure, drawdown, and walk-forward metrics.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (The autonomous paper path monitors live or fallback news, uses the newest persisted portfolio) Tj
+0 -15 Td
+/F1 10 Tf (forecast when it is fresh, falls back to sentiment when no current research artifact is) Tj
+0 -15 Td
+/F1 10 Tf (available, sizes each trade against a one-percent risk budget, and applies stop-loss and take-) Tj
+0 -15 Td
+/F1 10 Tf (profit rules.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (The strongest research decisions are the causal feature construction, chronological purged and) Tj
+0 -15 Td
+/F1 10 Tf (embargoed splits, uncertainty-aware forecasts, explicit transaction costs, and exposure) Tj
+0 -15 Td
+/F1 10 Tf (reporting. The largest remaining risk is that historical research and live execution still) Tj
+0 -15 Td
+/F1 10 Tf (operate on different time scales and data-quality assumptions.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -19 Td
+/F1 16 Tf (2. What quantitative trading is) Tj
+0 -15 Td
+/F1 10 Tf (Quantitative trading translates data into explicit, repeatable decisions. A complete quant) Tj
+0 -15 Td
+/F1 10 Tf (system has six layers: data ingestion, feature engineering, signal generation, portfolio) Tj
+0 -15 Td
+/F1 10 Tf (construction, execution, and evaluation.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (The quant advantage is not that a model predicts every price correctly. It is that assumptions) Tj
+0 -15 Td
+/F1 10 Tf (become measurable. A researcher can compare a price-only model with a news-only model, measure) Tj
+0 -15 Td
+/F1 10 Tf (whether news adds incremental rank information, include realistic costs, and reject a strategy) Tj
+0 -15 Td
+/F1 10 Tf (that only works in one historical interval.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (A valid quant process separates research from evaluation. The model must not see future prices,) Tj
+0 -15 Td
+/F1 10 Tf (future universe membership, or future information timestamps while features, scaling, training,) Tj
+0 -15 Td
+/F1 10 Tf (or allocation rules are being selected.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 2178 >>
+stream
+BT
+/F1 16 Tf
+50 760 Td
+/F1 16 Tf (3. End-to-end architecture) Tj
+0 -15 Td
+/F1 10 Tf (Historical research flow:) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (1. Load daily OHLCV, news sentiment, and optional macro data.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (2. Resolve a tradable universe using symbols supported by both price and news data, with in-) Tj
+0 -15 Td
+/F1 10 Tf (sample liquidity selection.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (3. Build causal daily features and trailing clustered news features.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (4. Align both branches into arrays shaped as assets x trading days x features.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (5. Build lookback windows and forward-return targets.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (6. Train the multimodal return-distribution model on chronological samples.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (7. Generate out-of-sample mean and covariance forecasts with MC dropout.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (8. Allocate weights using EW, BL, Bayesian BL, MVO, RP, or HRP.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (9. Simulate drift, rebalancing, turnover, transaction costs, and slippage.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (10. Report performance, risk, exposure, and walk-forward folds.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Live paper flow:) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (1. Load the newest predictions_H*.npz artifact if it is within the configured freshness window.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (2. Convert predicted return and covariance into a volatility-adjusted signal and MVO portfolio) Tj
+0 -15 Td
+/F1 10 Tf (weight.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (3. Rank eligible symbols and process multiple symbols per cycle.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (4. Size quantity from account equity, risk-per-trade, price, stop distance, and position limits.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (5. Fill a paper order, monitor its stop and target, record P&L, and audit the lifecycle.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 6 0 R >>
+endobj
+8 0 obj
+<< /Length 2826 >>
+stream
+BT
+/F1 16 Tf
+50 760 Td
+/F1 16 Tf (4. Data and universe selection) Tj
+0 -15 Td
+/F1 10 Tf (The central alignment code is in tyche/portfolio/data/assemble.py. It creates one fixed asset) Tj
+0 -15 Td
+/F1 10 Tf (order and one shared trading-day index. This prevents the daily and news branches from) Tj
+0 -15 Td
+/F1 10 Tf (describing different assets or different dates in the same model input.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Universe resolution in tyche/portfolio/data/universe.py keeps names with both prices and news,) Tj
+0 -15 Td
+/F1 10 Tf (optionally requires a complete history, applies liquidity filters, and ranks by median dollar) Tj
+0 -15 Td
+/F1 10 Tf (volume. Selection can be restricted to data on or before the in-sample boundary, reducing look-) Tj
+0 -15 Td
+/F1 10 Tf (ahead and survivorship bias.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (The remaining data risk is upstream. If the source dataset already excludes delisted names,) Tj
+0 -15 Td
+/F1 10 Tf (contains revised timestamps, or only represents successful companies, Tyche cannot fully remove) Tj
+0 -15 Td
+/F1 10 Tf (that bias. A stronger research dataset should preserve historical membership and publication-) Tj
+0 -15 Td
+/F1 10 Tf (time availability.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -19 Td
+/F1 16 Tf (5. Feature engineering) Tj
+0 -15 Td
+/F1 10 Tf (Daily market features include returns, overnight and intraday movement, range, volatility,) Tj
+0 -15 Td
+/F1 10 Tf (momentum, RSI, ATR, moving-average ratios, return z-scores, volume z-scores, relative volume,) Tj
+0 -15 Td
+/F1 10 Tf (and liquidity diagnostics. These features describe direction, trend persistence, movement scale,) Tj
+0 -15 Td
+/F1 10 Tf (participation, and trading friction.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (News features use a trailing calendar window, embedding-based deduplication, representative) Tj
+0 -15 Td
+/F1 10 Tf (articles, mean sentiment, and article-count information. Deduplication is important because ten) Tj
+0 -15 Td
+/F1 10 Tf (copies of one headline should not automatically count as ten independent signals.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (The I-MACD alpha filter attempts to remove market-explained movement. It estimates a market) Tj
+0 -15 Td
+/F1 10 Tf (relationship, works with residual movement, and applies direction, purity, and persistence) Tj
+0 -15 Td
+/F1 10 Tf (gates. This makes the signal more stock-specific than ordinary price MACD, although it can delay) Tj
+0 -15 Td
+/F1 10 Tf (reactions to abrupt events.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Recommended additions are sentiment freshness decay, positive/negative disagreement, event type,) Tj
+0 -15 Td
+/F1 10 Tf (surprise, source quality, spread, quote age, and a live version of the market-relative filter.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 8 0 R >>
+endobj
+10 0 obj
+<< /Length 2509 >>
+stream
+BT
+/F1 16 Tf
+50 760 Td
+/F1 16 Tf (6. Windowing and leakage control) Tj
+0 -15 Td
+/F1 10 Tf (The window builder in tyche/portfolio/data/windows.py uses a lookback T and forward holding) Tj
+0 -15 Td
+/F1 10 Tf (horizon H. A sample at decision day t contains the synchronized T-day history and targets the) Tj
+0 -15 Td
+/F1 10 Tf (forward log return log\(price[t+H] / price[t]\).) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Splits are chronological rather than random. A target horizon is purged when it crosses a split) Tj
+0 -15 Td
+/F1 10 Tf (boundary, and an embargo of at least H trading days is applied after boundaries. Standardization) Tj
+0 -15 Td
+/F1 10 Tf (is fitted only on days touched by training samples.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (These protections materially improve the credibility of results. Without them, overlapping) Tj
+0 -15 Td
+/F1 10 Tf (forward targets and future normalization statistics can make a backtest look profitable for the) Tj
+0 -15 Td
+/F1 10 Tf (wrong reason.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -19 Td
+/F1 16 Tf (7. Predictive model and uncertainty) Tj
+0 -15 Td
+/F1 10 Tf (The model in tyche/portfolio/model/network.py has separate sequence-convolution encoders for) Tj
+0 -15 Td
+/F1 10 Tf (daily and news inputs. Their embeddings are fused and passed through an LSTM or attention) Tj
+0 -15 Td
+/F1 10 Tf (encoder.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (The model produces a predicted mean return for every asset and a positive covariance using a) Tj
+0 -15 Td
+/F1 10 Tf (low-rank factor plus diagonal parameterization. This allows the allocator to reason about cross-) Tj
+0 -15 Td
+/F1 10 Tf (asset relationships rather than treating every forecast as independent.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (At inference, MC dropout produces repeated mean forecasts. The variation between those forecasts) Tj
+0 -15 Td
+/F1 10 Tf (is epistemic uncertainty, while the model covariance is aleatoric uncertainty. Their sum is the) Tj
+0 -15 Td
+/F1 10 Tf (total predictive covariance used by allocation.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Uncertainty is valuable for position sizing and diversification, but it is only useful when) Tj
+0 -15 Td
+/F1 10 Tf (calibrated. Coverage, rank information coefficient, covariance quality, and performance by) Tj
+0 -15 Td
+/F1 10 Tf (uncertainty bucket should be monitored rather than assuming a neural variance estimate is) Tj
+0 -15 Td
+/F1 10 Tf (automatically reliable.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 10 0 R >>
+endobj
+12 0 obj
+<< /Length 3441 >>
+stream
+BT
+/F1 16 Tf
+50 760 Td
+/F1 16 Tf (8. Portfolio allocation) Tj
+0 -15 Td
+/F1 10 Tf (Equal Weight is the benchmark. MVO uses predicted return and covariance under long-only and per-) Tj
+0 -15 Td
+/F1 10 Tf (asset constraints. Risk parity and HRP emphasize balanced risk contributions. Black-Litterman) Tj
+0 -15 Td
+/F1 10 Tf (combines a prior with model views; direct BL can produce large gross exposure unless) Tj
+0 -15 Td
+/F1 10 Tf (constrained.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (The allocator is more appropriate for a portfolio strategy than simply buying the strongest) Tj
+0 -15 Td
+/F1 10 Tf (ticker. It can reduce concentration, incorporate covariance, and express a coherent target book.) Tj
+0 -15 Td
+/F1 10 Tf (However, forecast error in expected returns can dominate optimization, so equal weight and risk-) Tj
+0 -15 Td
+/F1 10 Tf (based baselines are essential.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (A production allocator should apply explicit gross leverage, net exposure, short exposure,) Tj
+0 -15 Td
+/F1 10 Tf (sector, single-name, turnover, and correlated-risk limits after optimization, not only rely on) Tj
+0 -15 Td
+/F1 10 Tf (the optimizer's nominal constraints.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -19 Td
+/F1 16 Tf (9. Backtest mechanics and costs) Tj
+0 -15 Td
+/F1 10 Tf (The event-driven engine in tyche/portfolio/allocation/backtest.py rebalances every H trading) Tj
+0 -15 Td
+/F1 10 Tf (days. Between rebalances, weights drift with realized returns. At the end of each segment, the) Tj
+0 -15 Td
+/F1 10 Tf (engine applies turnover-based transaction costs and slippage.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (The engine records daily value, target weights, turnover, gross segment return, net segment) Tj
+0 -15 Td
+/F1 10 Tf (return, transaction costs, and slippage. This is materially better than a signal chart that) Tj
+0 -15 Td
+/F1 10 Tf (ignores execution friction.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (A remaining modelling limitation is that costs are booked at a discrete holding-period boundary.) Tj
+0 -15 Td
+/F1 10 Tf (A stronger execution simulator would model bid-ask spreads, order timing, partial fills, market) Tj
+0 -15 Td
+/F1 10 Tf (impact, stop gaps, and publication-to-trade latency.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -19 Td
+/F1 16 Tf (10. Evaluation and what the metrics mean) Tj
+0 -15 Td
+/F1 10 Tf (Portfolio metrics include cumulative gross and net return, annualized return, volatility,) Tj
+0 -15 Td
+/F1 10 Tf (Sharpe, Sortino, Calmar, maximum drawdown, average turnover, total costs, hit rate, gross) Tj
+0 -15 Td
+/F1 10 Tf (exposure, net exposure, short exposure, and worst leverage.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Net return must be evaluated alongside turnover and cost drag. Sharpe must be read alongside) Tj
+0 -15 Td
+/F1 10 Tf (drawdown, leverage, and sample length. A high return from hidden gross exposure is not) Tj
+0 -15 Td
+/F1 10 Tf (equivalent to a fully invested strategy.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Walk-forward folds divide the out-of-sample path into contiguous sections. Stable performance) Tj
+0 -15 Td
+/F1 10 Tf (across folds is more informative than one attractive aggregate number. Add confidence intervals,) Tj
+0 -15 Td
+/F1 10 Tf (bootstrap analysis, probability of backtest overfitting, deflated Sharpe, and regime breakdowns) Tj
+0 -15 Td
+/F1 10 Tf (before trusting a result.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+ET
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 12 0 R >>
+endobj
+14 0 obj
+<< /Length 2729 >>
+stream
+BT
+/F1 16 Tf
+50 760 Td
+/F1 16 Tf (11. Autonomous paper executor) Tj
+0 -15 Td
+/F1 10 Tf (tyche/execution/paper.py maintains an auditable order lifecycle and persists orders, execution) Tj
+0 -15 Td
+/F1 10 Tf (audit records, and learning state. It supports long and short paper trades, multiple symbols per) Tj
+0 -15 Td
+/F1 10 Tf (cycle, stale-price duplicate suppression, stop-loss and take-profit exits, and configurable) Tj
+0 -15 Td
+/F1 10 Tf (position limits.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (The default risk budget is capped at one percent of equity per trade. Quantity is approximately) Tj
+0 -15 Td
+/F1 10 Tf (risk budget divided by price multiplied by stop distance. This is preferable to fixed share) Tj
+0 -15 Td
+/F1 10 Tf (quantities because the dollar risk scales with price and account size.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (The bot's learning layer is a capped per-symbol bias adjustment. It is not full reinforcement) Tj
+0 -15 Td
+/F1 10 Tf (learning: it currently records mark-to-market outcomes and nudges future signals. It should only) Tj
+0 -15 Td
+/F1 10 Tf (learn from completed round trips with realized P&L, fees, slippage, and a clearly defined trade) Tj
+0 -15 Td
+/F1 10 Tf (episode.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (The current account must also have portfolio-level controls. Ten trades at one percent risk each) Tj
+0 -15 Td
+/F1 10 Tf (can expose ten percent of equity to stop losses, and correlated semiconductor positions can lose) Tj
+0 -15 Td
+/F1 10 Tf (together.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -19 Td
+/F1 16 Tf (12. Impact on quantitative research) Tj
+0 -15 Td
+/F1 10 Tf (Tyche provides a useful experimental platform for multimodal alpha research. It can test whether) Tj
+0 -15 Td
+/F1 10 Tf (news adds information beyond market features, whether residual momentum improves stock) Tj
+0 -15 Td
+/F1 10 Tf (selection, whether uncertainty improves allocation, and whether portfolio optimizers survive) Tj
+0 -15 Td
+/F1 10 Tf (costs.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Its biggest research contribution is traceability: each layer has a measurable contract. Data) Tj
+0 -15 Td
+/F1 10 Tf (becomes aligned arrays, windows become targets, the model becomes predictive moments, moments) Tj
+0 -15 Td
+/F1 10 Tf (become weights, and weights become a costed equity curve.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (This structure helps prevent a common quant failure: optimizing a model metric while ignoring) Tj
+0 -15 Td
+/F1 10 Tf (whether the final portfolio is tradable. A model can improve RMSE while worsening rank IC,) Tj
+0 -15 Td
+/F1 10 Tf (turnover, drawdown, or net return. Tyche makes those trade-offs visible.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+ET
+endstream
+endobj
+15 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 14 0 R >>
+endobj
+16 0 obj
+<< /Length 2821 >>
+stream
+BT
+/F1 16 Tf
+50 760 Td
+/F1 16 Tf (13. Main weaknesses and risks) Tj
+0 -15 Td
+/F1 10 Tf (Research/live divergence: the historical model predicts daily forward returns while the live bot) Tj
+0 -15 Td
+/F1 10 Tf (can react to intraday news and fallback quotes. A successful backtest does not automatically) Tj
+0 -15 Td
+/F1 10 Tf (validate the live sentiment executor.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Data freshness: a last close is not a live quote. New trades should be blocked when quote age,) Tj
+0 -15 Td
+/F1 10 Tf (market session, or provider status is unacceptable, while existing positions can still be marked) Tj
+0 -15 Td
+/F1 10 Tf (with a stale quote.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (P&L accounting: per-order mark-to-market P&L can double-count movements. A proper lot ledger) Tj
+0 -15 Td
+/F1 10 Tf (should separate realized P&L, unrealized P&L, fees, slippage, and matched entry/exit trades.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Risk aggregation: per-trade risk is not portfolio risk. Add maximum total open risk, sector) Tj
+0 -15 Td
+/F1 10 Tf (limits, correlation limits, gross and net exposure limits, and a daily drawdown kill switch.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Operational reliability: model loading, external providers, and background server lifetime can) Tj
+0 -15 Td
+/F1 10 Tf (delay readiness. The UI should expose data source, quote age, artifact age, and provider errors.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -19 Td
+/F1 16 Tf (14. Highest-impact improvement roadmap) Tj
+0 -15 Td
+/F1 10 Tf (Phase 1 - correctness: add a lot-based trade ledger; block stale new entries; show target risk) Tj
+0 -15 Td
+/F1 10 Tf (versus actual risk; add maximum total open risk; persist signal timestamp, quote timestamp, and) Tj
+0 -15 Td
+/F1 10 Tf (artifact timestamp.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Phase 2 - research/live consistency: share feature builders between backtest and live mode; use) Tj
+0 -15 Td
+/F1 10 Tf (the same trained model and allocator online; align news publication time with the trading) Tj
+0 -15 Td
+/F1 10 Tf (decision; build a live-style simulator.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Phase 3 - signal quality: combine model forecast, sentiment, momentum, volatility, liquidity,) Tj
+0 -15 Td
+/F1 10 Tf (market regime, and expected cost. Trade only when expected return exceeds estimated costs and a) Tj
+0 -15 Td
+/F1 10 Tf (confidence threshold.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (Phase 4 - validation: compare price-only, news-only, combined, and filtered ablations; test) Tj
+0 -15 Td
+/F1 10 Tf (multiple holding periods and cost scenarios; evaluate bull, bear, and sideways regimes; report) Tj
+0 -15 Td
+/F1 10 Tf (confidence intervals and robustness statistics.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+ET
+endstream
+endobj
+17 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 16 0 R >>
+endobj
+18 0 obj
+<< /Length 1258 >>
+stream
+BT
+/F1 16 Tf
+50 760 Td
+/F1 16 Tf (15. Final assessment) Tj
+0 -15 Td
+/F1 10 Tf (Tyche is best described as a multimodal cross-sectional alpha and portfolio-construction) Tj
+0 -15 Td
+/F1 10 Tf (research system with a connected paper execution layer. It is substantially more rigorous than a) Tj
+0 -15 Td
+/F1 10 Tf (fixed-rule trading demo because it includes causal features, uncertainty, allocation choices,) Tj
+0 -15 Td
+/F1 10 Tf (costs, exposure metrics, and walk-forward evaluation.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (The strategy should not yet be judged by live paper P&L alone. The next meaningful milestone is) Tj
+0 -15 Td
+/F1 10 Tf (a reproducible experiment showing that the same signal and allocation path performs consistently) Tj
+0 -15 Td
+/F1 10 Tf (out of sample, after costs, under realistic execution assumptions and portfolio-level risk) Tj
+0 -15 Td
+/F1 10 Tf (constraints.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+0 -15 Td
+/F1 10 Tf (If those tests remain positive, Tyche will have a stronger claim as a quantitative research) Tj
+0 -15 Td
+/F1 10 Tf (framework. Until then, treat live results as engineering validation and hypothesis generation,) Tj
+0 -15 Td
+/F1 10 Tf (not evidence of a durable trading edge.) Tj
+0 -15 Td
+/F1 10 Tf () Tj
+ET
+endstream
+endobj
+19 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 18 0 R >>
+endobj
+xref
+0 20
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000168 00000 n 
+0000000238 00000 n 
+0000003608 00000 n 
+0000003734 00000 n 
+0000005964 00000 n 
+0000006090 00000 n 
+0000008968 00000 n 
+0000009094 00000 n 
+0000011656 00000 n 
+0000011784 00000 n 
+0000015278 00000 n 
+0000015406 00000 n 
+0000018188 00000 n 
+0000018316 00000 n 
+0000021190 00000 n 
+0000021318 00000 n 
+0000022629 00000 n 
+trailer
+<< /Size 20 /Root 1 0 R >>
+startxref
+22757
+%%EOF
