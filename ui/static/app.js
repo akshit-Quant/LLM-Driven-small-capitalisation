@@ -126,7 +126,7 @@ function renderStats() {
   document.getElementById('cashValue').textContent = currency(dashboardState.cash);
   document.getElementById('riskScore').textContent = `${dashboardState.riskScore}%`;
   document.getElementById('riskMeter').style.width = `${dashboardState.riskScore}%`;
-  document.getElementById('sentimentValue').textContent = dashboardState.sentiment.toFixed(2);
+  document.getElementById('sentimentValue').textContent = dashboardState.sentiment.toFixed(3);
   const totalTrend = document.getElementById('totalTrend');
   const pnlTrend = document.getElementById('pnlTrend');
   totalTrend.textContent = pct(dashboardState.trend);
@@ -255,8 +255,8 @@ async function fetchSystemStatus() {
       executionState,
       executionTone,
       paper.lastAction
-        ? `${paper.signalSource || 'sentiment'} signal · ${paper.lastAction} · risk ${(Number(paper.riskPerTrade || 0.01) * 100).toFixed(1)}%/trade`
-        : `${paper.signalSource || 'sentiment'} signal · autonomous paper mode available`
+        ? `${paper.signalSource || 'sentiment'} · ${paper.lastAction} · risk ${(Number(paper.riskPerTrade || 0.01) * 100).toFixed(1)}%/trade`
+        : `${paper.signalSource || 'sentiment'} · autonomous paper mode available`
     );
     updateExecutionControls(paper);
 
@@ -644,18 +644,24 @@ async function fetchNewsReviews(symbol = selectedSymbol) {
     dashboardState = { ...dashboardState, ...payload };
     baselineTotalValue = Number(payload.totalValue) || baselineTotalValue;
     dashboardState.newsReviews = payload.newsReviews || [];
-    if (!dashboardState.newsReviews.length) {
-      const latestResponse = await fetch(`/api/news/latest?symbol=${encodeURIComponent(symbol)}&ts=${Date.now()}`, { cache: 'no-store' });
-      if (latestResponse.ok) {
-        const latest = await latestResponse.json();
-        dashboardState.newsReviews = latest.newsReviews || [];
-        dashboardState.newsFeedStatus = latest;
+    const latestResponse = await fetch(`/api/news/latest?symbol=${encodeURIComponent(symbol)}&ts=${Date.now()}`, { cache: 'no-store' });
+    if (latestResponse.ok) {
+      const latest = await latestResponse.json();
+      if (latest.newsReviews?.length) {
+        dashboardState.newsReviews = latest.newsReviews;
+      }
+      dashboardState.newsFeedStatus = latest;
+      const liveScores = dashboardState.newsReviews
+        .map((item) => Number(item.sentiment_final ?? item.raw_score))
+        .filter((score) => Number.isFinite(score));
+      if (liveScores.length) {
+        dashboardState.sentiment = liveScores.reduce((sum, score) => sum + score, 0) / liveScores.length;
+        dashboardState.sentimentBackend = latest.sentimentBackend || dashboardState.sentimentBackend;
+        dashboardState.sentimentModel = latest.sentimentModel || dashboardState.sentimentModel;
+        dashboardState.sentimentUpdatedAt = latest.updatedAt || dashboardState.sentimentUpdatedAt;
       }
     }
-    if (typeof payload.selectedSentiment === 'number') {
-      dashboardState.sentiment = payload.selectedSentiment;
-      renderStats();
-    }
+    renderStats();
     renderNewsReviews();
   } catch (error) {
     console.warn('News reviews unavailable:', error);
@@ -866,9 +872,6 @@ async function fetchDashboard() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     dashboardState = { ...dashboardState, ...payload };
-    if (typeof payload.selectedSentiment === 'number') {
-      dashboardState.sentiment = payload.selectedSentiment;
-    }
     const ordersResponse = await fetch(`/api/orders?ts=${Date.now()}`, { cache: 'no-store' });
     if (ordersResponse.ok) {
       const orderPayload = await ordersResponse.json();

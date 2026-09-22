@@ -175,6 +175,9 @@ class PaperAutopilot:
             "halted": self._halted, "haltReason": self._halt_reason,
             "lastAction": self.last_action, "lastError": self.last_error,
             "signalSource": self.last_signal_source,
+            "allocationStrategies": [
+                "EW", "BL", "Bayesian_BL", "MVO", "RP", "HRP"
+            ],
             "maxNotional": self.risk.max_notional or None,
             "maxOrdersPerDay": None,
             "dailyOrderLimit": False,

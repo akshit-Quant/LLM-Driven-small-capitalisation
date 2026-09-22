@@ -37,6 +37,7 @@ load_dotenv(ROOT / ".env")
 ORDERS: list[dict[str, Any]] = []
 _BETA_CACHE: dict[str, tuple[float, float | None]] = {}
 _NEWS_CACHE: tuple[float, dict[str, Any]] | None = None
+_NEWS_SYMBOL_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _FINBERT_SCORE_LOCK = Lock()
 ORDERS_PATH = ROOT / "data" / "output" / "simulated_orders.json"
 if ORDERS_PATH.exists():
@@ -464,12 +465,12 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
             "riskScore": round(float(account.get("openRiskPct", 0.0)), 2),
             "openRisk": account.get("openRisk", 0.0),
             "openRiskPct": account.get("openRiskPct", 0.0),
-            "sentiment": round(sentiment_score, 2),
+            "sentiment": round(sentiment_score, 3),
             "selectedSentiment": round(
                 float(selected_rows["sentiment_final"].mean())
                 if not selected_rows.empty and "sentiment_final" in selected_rows.columns
                 else sentiment_score,
-                2,
+                3,
             ),
             "trend": trend,
             "positions": top_positions,
@@ -481,8 +482,10 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
             "sentimentBackend": os.environ.get("TYCHE_SENTIMENT_BACKENDS", "finbert").split(",")[0].strip(),
             "sentimentModel": os.environ.get("TYCHE_SENTIMENT_FINBERT_NAME", "ProsusAI/finbert"),
             "qwenEnabled": (
-                "qwen_summary" in df.columns
-                and df["qwen_summary"].fillna("").astype(str).str.strip().ne("").any()
+                bool(
+                    "qwen_summary" in df.columns
+                    and df["qwen_summary"].fillna("").astype(str).str.strip().ne("").any()
+                )
             ),
             "qwenModel": os.environ.get("TYCHE_QWEN_MODEL", "qwen2.5:3b"),
             "sentimentUpdatedAt": datetime.fromtimestamp(
@@ -494,12 +497,25 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
                 payload[key] = fallback[key]
             payload["positions"] = fallback["positions"]
             payload["history"] = fallback["history"]
-        live_feed = _read_latest_news(symbol)
+        # Do not make the dashboard's critical account/metrics response wait for
+        # a first-time provider request and CPU sentiment inference. The news
+        # panel fetches /api/news/latest separately; once that cache is warm,
+        # reuse it here for the selected-symbol sentiment.
+        cached_live_feed = (
+            _NEWS_SYMBOL_CACHE.get(str(symbol).upper())
+            if symbol
+            else _NEWS_CACHE
+        )
+        live_feed = (
+            _read_latest_news(symbol)
+            if cached_live_feed and time.time() - cached_live_feed[0] < 60
+            else {}
+        )
         live_reviews = live_feed.get("newsReviews", [])
         if live_reviews and live_feed.get("sentimentBackend") == "finbert":
             live_scores = [float(item.get("sentiment_final", 0.0)) for item in live_reviews]
             payload["newsReviews"] = live_reviews
-            payload["sentiment"] = round(sum(live_scores) / len(live_scores), 2)
+            payload["sentiment"] = round(sum(live_scores) / len(live_scores), 3)
             payload["selectedSentiment"] = payload["sentiment"]
             payload["sentimentBackend"] = live_feed["sentimentBackend"]
             payload["sentimentModel"] = live_feed["sentimentModel"]
@@ -847,7 +863,11 @@ def _read_latest_news(symbol: str | None = None) -> dict[str, Any]:
     """Return fresh raw news for the terminal when no processed artifact exists."""
     global _NEWS_CACHE
     now = time.time()
-    if not symbol and _NEWS_CACHE and now - _NEWS_CACHE[0] < 60:
+    cache_key = symbol.upper() if symbol else None
+    cached_symbol = _NEWS_SYMBOL_CACHE.get(cache_key) if cache_key else None
+    if cached_symbol and now - cached_symbol[0] < 60:
+        payload = cached_symbol[1]
+    elif not symbol and _NEWS_CACHE and now - _NEWS_CACHE[0] < 60:
         payload = _NEWS_CACHE[1]
     else:
         api_key = (
@@ -947,7 +967,9 @@ def _read_latest_news(symbol: str | None = None) -> dict[str, Any]:
                 except (ImportError, ValueError, TypeError, KeyError):
                     pass
         rows.sort(key=lambda item: item["valid_time"], reverse=True)
-        scored_by_finbert = _score_live_news_with_finbert(rows)
+        # The dashboard displays at most 24 reviews. Scoring the full provider
+        # response makes the first page load block on hundreds of CPU inferences.
+        scored_by_finbert = _score_live_news_with_finbert(rows[:24])
         if not scored_by_finbert:
             for row in rows:
                 row.update(_local_news_sentiment(row.get("summary_text", "")))
@@ -963,10 +985,12 @@ def _read_latest_news(symbol: str | None = None) -> dict[str, Any]:
         }
         _NEWS_CACHE = (now, payload)
     if symbol:
-        payload = {**payload, "newsReviews": [
-            item for item in payload.get("newsReviews", [])
-            if str(item.get("ticker", "")).upper() == symbol.upper()
-        ]}
+        if cache_key not in _NEWS_SYMBOL_CACHE or not cached_symbol or now - cached_symbol[0] >= 60:
+            payload = {**payload, "newsReviews": [
+                item for item in payload.get("newsReviews", [])
+                if str(item.get("ticker", "")).upper() == cache_key
+            ]}
+            _NEWS_SYMBOL_CACHE[cache_key] = (now, payload)
     return payload
 
 
@@ -985,7 +1009,10 @@ class TycheHandler(BaseHTTPRequestHandler):
 
         if route == "/api/dashboard":
             symbol = (params.get("symbol") or [None])[0]
-            self._send_json(200, _read_dashboard_payload(symbol))
+            try:
+                self._send_json(200, _read_dashboard_payload(symbol))
+            except Exception as exc:
+                self._send_json(503, {"ok": False, "error": str(exc)})
             return
 
         if route == "/api/news/latest":
@@ -1092,22 +1119,19 @@ class TycheHandler(BaseHTTPRequestHandler):
         if route == "/run-portfolio":
             holding = int((params.get("holding") or ["5"])[0])
             try:
-                from dataclasses import replace
-
                 from tyche.portfolio.config import default_config
-                from tyche.portfolio.run import config_for_holding, run_experiment
+                from tyche.portfolio.run import config_for_holding, run_grid
 
                 cfg = config_for_holding(default_config(), holding)
-                results = run_experiment(cfg)
-                metrics = results["portfolio_metrics"]
+                combined = run_grid(cfg, (holding,))
+                metrics = combined.reset_index().to_dict(orient="records")
                 self._send_json(
                     200,
                     {
                         "ok": True,
                         "holding": holding,
-                        "models": list(metrics.keys()),
-                        "metrics": {k: v for k, v in metrics.items()},
-                        "walk_forward": results.get("walk_forward", {}),
+                        "models": [row["model"] for row in metrics],
+                        "metrics": metrics,
                     },
                 )
             except Exception as exc:  # pragma: no cover - runtime diagnostic path
@@ -1227,18 +1251,18 @@ class TycheHandler(BaseHTTPRequestHandler):
             holding = int(data.get("holding", 5))
             try:
                 from tyche.portfolio.config import default_config
-                from tyche.portfolio.run import config_for_holding, run_experiment
+                from tyche.portfolio.run import config_for_holding, run_grid
 
                 cfg = config_for_holding(default_config(), holding)
-                results = run_experiment(cfg)
+                combined = run_grid(cfg, (holding,))
+                metrics = combined.reset_index().to_dict(orient="records")
                 self._send_json(
                     200,
                     {
                         "ok": True,
                         "holding": holding,
-                        "models": list(results["portfolio_metrics"].keys()),
-                        "metrics": {k: v for k, v in results["portfolio_metrics"].items()},
-                        "walk_forward": results.get("walk_forward", {}),
+                        "models": [row["model"] for row in metrics],
+                        "metrics": metrics,
                     },
                 )
             except Exception as exc:
