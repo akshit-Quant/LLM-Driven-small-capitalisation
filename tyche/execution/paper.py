@@ -44,10 +44,12 @@ class PaperAutopilot:
         market_price: Callable[[str], float],
         sentiment_feed: Callable[[], list[dict[str, Any]]] | None = None,
         portfolio_feed: Callable[[], list[dict[str, Any]]] | None = None,
+        broker_adapter: Any | None = None,
     ) -> None:
         self.root, self.orders, self.save_orders, self.market_price = root, orders, save_orders, market_price
         self.sentiment_feed = sentiment_feed
         self.portfolio_feed = portfolio_feed
+        self.broker_adapter = broker_adapter
         self.last_signal_source = "none"
         self.risk = RiskLimits()
         self.max_notional = self.risk.max_notional  # backwards-compatible dashboard fields
@@ -170,8 +172,11 @@ class PaperAutopilot:
         trades = sum(int(item.get("trades", 0)) for item in self.learning.values())
         wins = sum(int(item.get("wins", 0)) for item in self.learning.values())
         learning_pnl = round(sum(float(item.get("pnl", 0.0)) for item in self.learning.values()), 2)
+        alpaca_ok = bool(self.broker_adapter and getattr(self.broker_adapter, "configured", False))
         return {
             "mode": "autonomous-paper", "running": self.running,
+            "broker": "alpaca" if alpaca_ok else "simulated",
+            "alpacaConfigured": alpaca_ok,
             "halted": self._halted, "haltReason": self._halt_reason,
             "lastAction": self.last_action, "lastError": self.last_error,
             "signalSource": self.last_signal_source,
@@ -420,12 +425,23 @@ class PaperAutopilot:
         if quantity <= 0:
             self.last_error = ""
             return None
+        extra_fields: dict[str, Any] = {}
+        if self.broker_adapter and getattr(self.broker_adapter, "configured", False):
+            try:
+                alpaca_resp = self.broker_adapter.submit_market_order(ticker, side, quantity, confirm=True)
+                extra_fields["alpacaOrderId"] = alpaca_resp.get("id")
+                extra_fields["broker"] = "Alpaca Paper"
+            except Exception as alp_err:
+                extra_fields["alpacaError"] = str(alp_err)
+                extra_fields["broker"] = "Simulated (Alpaca Error)"
+
         order = self.record_order(
             ticker, side, quantity, price,
             signal=round(score, 6), mode="autonomous-paper",
             riskAmount=round(quantity * per_share_risk, 2),
             stopLoss=round(price * (1 - self.stop_distance_pct if side == "Buy" else 1 + self.stop_distance_pct), 4),
             takeProfit=round(price * (1 + self.take_profit_pct if side == "Buy" else 1 - self.take_profit_pct), 4),
+            **extra_fields,
         )
         self.transition(
             order["id"],
@@ -434,4 +450,5 @@ class PaperAutopilot:
             filled_price=order["price"],
         )
         self.last_error = ""
-        return f"{side} {ticker} from {self.last_signal_source} signal {score:.3f}"
+        broker_tag = " [Alpaca]" if "alpacaOrderId" in extra_fields else ""
+        return f"{side} {ticker}{broker_tag} from {self.last_signal_source} signal {score:.3f}"
