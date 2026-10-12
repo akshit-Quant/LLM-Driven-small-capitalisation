@@ -1,11 +1,15 @@
 import os
+import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import requests
+from dotenv import load_dotenv
 
-API_KEY = os.environ.get("FINNHUB_API_KEY")
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+API_KEY = os.environ.get("FINNHUB_API_KEY") or os.environ.get("TYCHE_FINNHUB_API_KEY")
 if not API_KEY:
     raise RuntimeError("FINNHUB_API_KEY is not set. Export it before running this script.")
 
@@ -28,9 +32,7 @@ OUT_PATH = ROOT / "data" / "rl2k" / "news.parquet"
 OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
-def fetch_company_news(symbol: str):
-    from_date = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
-    to_date = datetime.utcnow().strftime("%Y-%m-%d")
+def fetch_company_news(symbol: str, from_date: str, to_date: str):
     response = requests.get(
         "https://finnhub.io/api/v1/company-news",
         params={
@@ -45,10 +47,17 @@ def fetch_company_news(symbol: str):
     return response.json()
 
 
+parser = argparse.ArgumentParser(description="Fetch Finnhub company news to parquet.")
+parser.add_argument("--start", default=None, help="Start date YYYY-MM-DD.")
+parser.add_argument("--end", default=None, help="End date YYYY-MM-DD.")
+args = parser.parse_args()
+from_date = args.start or (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
+to_date = args.end or datetime.utcnow().strftime("%Y-%m-%d")
+
 rows: list[dict] = []
 for symbol in SYMBOLS:
     try:
-        news = fetch_company_news(symbol)
+        news = fetch_company_news(symbol, from_date, to_date)
     except Exception as exc:
         print(f"Failed for {symbol}: {exc}")
         continue

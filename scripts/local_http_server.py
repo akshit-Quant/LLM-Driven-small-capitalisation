@@ -16,7 +16,9 @@ import json
 import math
 import mimetypes
 import os
+import re
 import sys
+from threading import Lock
 import time
 import uuid
 from datetime import datetime, timezone
@@ -34,6 +36,21 @@ UI_ROOT = ROOT / "ui"
 load_dotenv(ROOT / ".env")
 ORDERS: list[dict[str, Any]] = []
 _BETA_CACHE: dict[str, tuple[float, float | None]] = {}
+_MARKET_CACHE: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[float, dict[str, Any]]] = {}
+_NEWS_CACHE: tuple[float, dict[str, Any]] | None = None
+_NEWS_SYMBOL_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_FINBERT_SCORE_LOCK = Lock()
+_NEWS_LOCK = Lock()
+_NEWS_STATUS: dict[str, Any] = {
+    "running": False,
+    "lastRun": None,
+    "lastRows": 0,
+    "lastError": None,
+    "finnhubConfigured": bool(
+        os.environ.get("TYCHE_FINNHUB_API_KEY", "").strip()
+        or os.environ.get("FINNHUB_API_KEY", "").strip()
+    ),
+}
 ORDERS_PATH = ROOT / "data" / "output" / "simulated_orders.json"
 if ORDERS_PATH.exists():
     try:
@@ -50,18 +67,65 @@ def _save_orders() -> None:
 
 
 def _paper_market_price(symbol: str) -> float:
-    return float(_read_market(symbol, "1D")["last"])
+    try:
+        return float(_read_live_market(symbol)["last"])
+    except (ImportError, requests.RequestException, FileNotFoundError, ValueError, KeyError, IndexError):
+        return float(_read_market(symbol, "1D")["last"])
 
 
-from tyche.execution.paper import PaperAutopilot
 from tyche.execution.alpaca import AlpacaPaperAdapter
+from tyche.execution.paper import PaperAutopilot
+from tyche.portfolio.live import latest_portfolio_signals
 
-PAPER_AUTOPILOT = PaperAutopilot(ROOT, ORDERS, _save_orders, _paper_market_price)
+
+def _update_env_keys(keys: dict[str, str]) -> None:
+    targets = [ROOT / ".env"]
+    worktree_env = ROOT.parent / f"{ROOT.name}.worktrees" / "open-site-access" / ".env"
+    if worktree_env.exists():
+        targets.append(worktree_env)
+    for target in targets:
+        if not target.exists():
+            continue
+        try:
+            content = target.read_text(encoding="utf-8")
+            lines = content.splitlines()
+            found = set()
+            new_lines = []
+            for line in lines:
+                matched_key = None
+                for k, v in keys.items():
+                    if line.startswith(f"{k}="):
+                        matched_key = k
+                        new_lines.append(f"{k}={v}")
+                        found.add(k)
+                        break
+                if not matched_key:
+                    new_lines.append(line)
+            for k, v in keys.items():
+                if k not in found:
+                    new_lines.append(f"{k}={v}")
+            target.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+
 ALPACA = AlpacaPaperAdapter()
+PAPER_AUTOPILOT = PaperAutopilot(
+    ROOT,
+    ORDERS,
+    _save_orders,
+    _paper_market_price,
+    lambda: _read_latest_news().get("newsReviews", []),
+    lambda: latest_portfolio_signals(ROOT),
+    broker_adapter=ALPACA,
+)
 
 
 def _demo_account() -> dict[str, Any]:
-    starting_cash = 100000.0
+    try:
+        starting_cash = float(os.environ.get("TYCHE_PAPER_STARTING_CASH", "100000"))
+    except ValueError:
+        starting_cash = 100000.0
     cash = starting_cash
     positions: dict[str, dict[str, float]] = {}
     for order in ORDERS:
@@ -90,22 +154,53 @@ def _demo_account() -> dict[str, Any]:
                 "name": symbol,
                 "quantity": round(quantity, 4),
                 "price": round(average_price, 2),
+                "entryPrice": round(average_price, 2),
                 "change": 0.0,
             }
         )
     unrealized_pnl = 0.0
+    live_prices: dict[str, float] = {}
     market_value = 0.0
     for row in rows:
         try:
-            current_price = float(_read_market(row["symbol"], "1D")["last"])
-        except (FileNotFoundError, ValueError, KeyError, IndexError):
-            current_price = row["price"]
+            current_price = float(_read_live_market(row["symbol"])["last"])
+        except (ImportError, requests.RequestException, FileNotFoundError, ValueError, KeyError, IndexError):
+            try:
+                current_price = float(_read_market(row["symbol"], "1D")["last"])
+            except (FileNotFoundError, ValueError, KeyError, IndexError):
+                current_price = row["price"]
         average_price = row["price"]
         row["price"] = round(current_price, 2)
+        live_prices[row["symbol"]] = current_price
         market_value += row["quantity"] * current_price
         unrealized_pnl += (current_price - average_price) * row["quantity"]
         row["change"] = round((current_price / average_price - 1.0) * 100.0, 2) if average_price else 0.0
+    open_risk = 0.0
+    for row in rows:
+        symbol_orders = [
+            item for item in ORDERS
+            if str(item.get("symbol", "")).upper() == row["symbol"]
+            and item.get("status") == "Filled"
+            and item.get("stopLoss") is not None
+            and item.get("mode") == "autonomous-paper"
+        ]
+        stop_distances = [
+            abs(float(item["price"]) - float(item["stopLoss"]))
+            for item in symbol_orders
+            if float(item.get("price", 0.0)) > 0
+        ]
+        if stop_distances:
+            open_risk += abs(float(row["quantity"])) * (sum(stop_distances) / len(stop_distances))
+    history = []
+    for order in ORDERS:
+        item = dict(order)
+        current_price = live_prices.get(str(order.get("symbol", "")).upper(), float(order.get("price", 0.0)))
+        signed = 1.0 if order.get("side") == "Buy" else -1.0
+        item["pnl"] = round((current_price - float(order.get("price", 0.0))) * float(order.get("qty", 0.0)) * signed, 2)
+        item["pnlType"] = "mark-to-market"
+        history.append(item)
     total_value = cash + market_value
+    risk_pct = (open_risk / total_value) * 100.0 if total_value else 0.0
     return {
         "accountBalance": round(total_value, 2),
         "buyingPower": round(cash, 2),
@@ -113,34 +208,39 @@ def _demo_account() -> dict[str, Any]:
         "totalValue": round(total_value, 2),
         "pnl": round(total_value - starting_cash, 2),
         "unrealizedPnl": round(unrealized_pnl, 2),
+        "openRisk": round(open_risk, 2),
+        "openRiskPct": round(risk_pct, 2),
         "positions": rows,
-        "history": ORDERS,
+        "history": history,
     }
 
 
-def _dashboard_fallback() -> dict[str, Any]:
+def _dashboard_fallback(symbol: str | None = None) -> dict[str, Any]:
+    try:
+        starting_cash = float(os.environ.get("TYCHE_PAPER_STARTING_CASH", "100000"))
+    except ValueError:
+        starting_cash = 100000.0
     return {
-        "accountBalance": 120000.0,
-        "buyingPower": 54000.0,
-        "totalValue": 142580.0,
-        "pnl": 12842.0,
-        "cash": 26000.0,
-        "riskScore": 72,
+        "accountBalance": starting_cash,
+        "buyingPower": starting_cash,
+        "totalValue": starting_cash,
+        "pnl": 0.0,
+        "cash": starting_cash,
+        "riskScore": 0,
+        "openRisk": 0.0,
+        "openRiskPct": 0.0,
         "sentiment": 0.74,
+        "sentimentBackend": os.environ.get("TYCHE_SENTIMENT_BACKENDS", "finbert").split(",")[0].strip(),
+        "sentimentModel": os.environ.get("TYCHE_SENTIMENT_FINBERT_NAME", "ProsusAI/finbert"),
+        "qwenEnabled": os.environ.get("TYCHE_QWEN_ENRICHMENT_ENABLED", "false").lower() == "true",
+        "qwenModel": os.environ.get("TYCHE_QWEN_MODEL", "qwen2.5:3b"),
+        "sentimentUpdatedAt": None,
+        "symbol": (symbol or "AAPL").upper(),
+        "newsReviews": [],
         "trend": 3.42,
-        "positions": [
-            {"symbol": "NVDA", "name": "NVIDIA", "quantity": 36, "price": 132.6, "change": 2.84},
-            {"symbol": "MSFT", "name": "Microsoft", "quantity": 24, "price": 418.1, "change": 1.67},
-            {"symbol": "AMD", "name": "AMD", "quantity": 52, "price": 148.2, "change": -0.78},
-            {"symbol": "AAPL", "name": "Apple", "quantity": 18, "price": 212.7, "change": 0.92},
-        ],
-        "history": [
-            {"time": "09:45", "side": "Buy", "symbol": "NVDA", "qty": 14, "price": 130.8},
-            {"time": "11:12", "side": "Sell", "symbol": "MSFT", "qty": 8, "price": 410.2},
-            {"time": "13:05", "side": "Buy", "symbol": "AMD", "qty": 22, "price": 146.9},
-            {"time": "15:42", "side": "Buy", "symbol": "AAPL", "qty": 10, "price": 210.5},
-        ],
-        "portfolioSeries": [118000, 119200, 121300, 124500, 126800, 128900, 131200, 136420, 139550, 142580],
+        "positions": [],
+        "history": [],
+        "portfolioSeries": [starting_cash],
         "sectorMix": [
             {"label": "AI", "value": 31},
             {"label": "Cloud", "value": 26},
@@ -148,12 +248,91 @@ def _dashboard_fallback() -> dict[str, Any]:
             {"label": "Hardware", "value": 16},
             {"label": "Cash", "value": 6},
         ],
+        "marketMetrics": _market_signal_metrics(symbol or "AAPL"),
     }
 
 
+_POSITIVE_NEWS_TERMS = {
+    "approval", "approved", "beat", "beats", "bullish", " contract", "gain",
+    "growth", "improve", "improves", "launch", "outperform", "partnership",
+    "profit", "positive", "record", "raised", "strong", "surge", "upgrade",
+}
+_NEGATIVE_NEWS_TERMS = {
+    "bearish", "crash", "cut", "decline", "delay", "downgrade", "fall",
+    "fraud", "investigation", "lawsuit", "layoff", "loss", "miss", "negative",
+    "penalty", "recall", "risk", "weak", "warning",
+}
+
+
+def _local_news_sentiment(text: str) -> dict[str, float]:
+    """Provide a visible local score when FinBERT output is unavailable."""
+    normalized = str(text).lower()
+    tokens = set(re.findall(r"[a-z]+", normalized))
+    positive = sum(term.strip() in tokens for term in _POSITIVE_NEWS_TERMS)
+    negative = sum(term.strip() in tokens for term in _NEGATIVE_NEWS_TERMS)
+    score = max(-1.0, min(1.0, (positive - negative) * 0.18))
+    confidence = min(0.82, 0.34 + abs(score) * 0.4)
+    neutral = 1.0 - confidence
+    if score > 0:
+        probabilities = (confidence, neutral * 0.35, neutral * 0.65)
+    elif score < 0:
+        probabilities = (neutral * 0.35, confidence, neutral * 0.65)
+    else:
+        probabilities = (0.3, 0.3, 0.4)
+    return {
+        "sentiment_final": round(score, 4),
+        "raw_score": round(score, 4),
+        "agg_p_pos": round(probabilities[0], 4),
+        "agg_p_neg": round(probabilities[1], 4),
+        "agg_p_neu": round(probabilities[2], 4),
+    }
+
+
+def _apply_fallback_sentiment(fallback: dict[str, Any], symbol: str | None) -> dict[str, Any]:
+    latest = _read_latest_news(symbol)
+    reviews = latest.get("newsReviews", [])
+    scores = [float(item.get("sentiment_final", 0.0)) for item in reviews]
+    if not scores:
+        return fallback
+    fallback["newsReviews"] = reviews
+    fallback["sentiment"] = round(sum(scores) / len(scores), 2)
+    fallback["selectedSentiment"] = fallback["sentiment"]
+    fallback["sentimentBackend"] = latest.get("sentimentBackend", "local-lexicon")
+    fallback["sentimentModel"] = latest.get("sentimentModel", "local-news-lexicon")
+    fallback["sentimentUpdatedAt"] = latest.get("updatedAt")
+    fallback["newsFeedStatus"] = latest
+    return fallback
+
+
+def _score_live_news_with_finbert(rows: list[dict[str, Any]]) -> bool:
+    texts = [str(row.get("summary_text", "")).strip() for row in rows]
+    if not any(texts):
+        return False
+    try:
+        from tyche.news.service.sentiment import get_backend
+
+        with _FINBERT_SCORE_LOCK:
+            scored = get_backend("finbert").score_unique(texts)
+        for row, text in zip(rows, texts):
+            pos, neg, neu, _ = scored[text]
+            row.update(
+                {
+                    "sentiment_final": round(pos - neg, 4),
+                    "raw_score": round(pos - neg, 4),
+                    "agg_p_pos": round(pos, 4),
+                    "agg_p_neg": round(neg, 4),
+                    "agg_p_neu": round(neu, 4),
+                }
+            )
+        return True
+    except (ImportError, OSError, RuntimeError, ValueError, KeyError):
+        return False
+
+
 def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
-    fallback = _dashboard_fallback()
-    fallback.update(_demo_account())
+    fallback = _dashboard_fallback(symbol)
+    if ORDERS:
+        fallback.update(_demo_account())
     portfolio = _read_portfolio_artifact()
     fallback["portfolio"] = portfolio
     candidates = [
@@ -162,12 +341,40 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
     ]
     sentiment_path = next((path for path in candidates if path.exists()), None)
     if sentiment_path is None:
-        return fallback
+        return _apply_fallback_sentiment(fallback, symbol)
 
     try:
         df = pd.read_parquet(sentiment_path)
         if df.empty:
-            return fallback
+            return _apply_fallback_sentiment(fallback, symbol)
+        if "summary_text" in df.columns:
+            score_series = (
+                df["sentiment_final"]
+                if "sentiment_final" in df.columns
+                else pd.Series(0.0, index=df.index)
+            )
+            existing_scores = pd.to_numeric(score_series, errors="coerce").fillna(0.0)
+            if existing_scores.abs().sum() == 0.0:
+                live_rows = [
+                    {"summary_text": text}
+                    for text in df["summary_text"].fillna("").astype(str).tolist()
+                ]
+                scored_by_finbert = _score_live_news_with_finbert(live_rows)
+                if scored_by_finbert:
+                    local_scores = pd.Series(live_rows, index=df.index).map(
+                        lambda item: item
+                    )
+                    fallback["sentimentBackend"] = "finbert"
+                    fallback["sentimentModel"] = os.environ.get(
+                        "TYCHE_SENTIMENT_FINBERT_NAME", "ProsusAI/finbert"
+                    )
+                else:
+                    local_scores = df["summary_text"].fillna("").map(_local_news_sentiment)
+                    fallback["sentimentBackend"] = "local-lexicon"
+                    fallback["sentimentModel"] = "local-news-lexicon"
+                for column in ("sentiment_final", "raw_score", "agg_p_pos", "agg_p_neg", "agg_p_neu"):
+                    df[column] = local_scores.map(lambda item, key=column: item[key])
+                df.to_parquet(sentiment_path, index=False)
 
         review_columns = [
             "article_id",
@@ -183,10 +390,20 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
             "agg_p_neu",
             "raw_score",
             "sentiment_final",
+            "finbert_agg_p_pos",
+            "finbert_agg_p_neg",
+            "finbert_agg_p_neu",
+            "finbert_raw_score",
+            "finbert_sentiment_rationale",
+            "finbert_model_revision",
         ]
         reviews = df[[column for column in review_columns if column in df.columns]].copy()
         for column in reviews.columns:
-            if column.startswith("agg_") or column in {"raw_score", "sentiment_final"}:
+            if (
+                column.startswith("agg_")
+                or column.startswith("finbert_agg_")
+                or column in {"raw_score", "sentiment_final", "finbert_raw_score"}
+            ):
                 reviews[column] = pd.to_numeric(reviews[column], errors="coerce").fillna(0.0)
             elif column == "valid_time":
                 reviews[column] = reviews[column].astype(str)
@@ -246,7 +463,7 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
                 sentiment_mean=("sentiment_final", "mean"),
                 avg_pos=("agg_p_pos", "mean"),
                 avg_neg=("agg_p_neg", "mean"),
-                article_count=("article_id", "count"),
+                article_count=("ticker", "size"),
             )
             .reset_index()
             .sort_values(["sentiment_mean", "article_count"], ascending=[False, False])
@@ -255,51 +472,159 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
         if ticker_summary.empty:
             return fallback
 
-        top_positions = []
-        for _, row in ticker_summary.head(4).iterrows():
-            symbol = str(row["ticker"])
-            sentiment = float(row["sentiment_mean"])
-            qty = max(8, int(abs(sentiment) * 80))
-            price = 80.0 + (abs(sentiment) * 180.0) + (float(row["avg_pos"]) * 80.0)
-            change = round(sentiment * 4.0, 2)
-            top_positions.append(
-                {"symbol": symbol, "name": symbol, "quantity": qty, "price": round(price, 2), "change": change}
+        watchlist_by_symbol: dict[str, dict[str, Any]] = {}
+        sentiment_symbols: list[str] = []
+        for _, row in ticker_summary.iterrows():
+            ticker = str(row["ticker"]).strip().upper()
+            if not ticker or ticker in {"NAN", "NONE"}:
+                continue
+            sentiment_symbols.append(ticker)
+            symbol_rows = df[df["ticker"].astype(str).str.upper().eq(ticker)]
+            latest_row = None
+            latest_date = None
+            if "valid_time" in symbol_rows.columns:
+                dates = pd.to_datetime(symbol_rows["valid_time"], errors="coerce", utc=True)
+                if dates.notna().any():
+                    latest_index = dates.idxmax()
+                    latest_row = symbol_rows.loc[latest_index]
+                    latest_date = dates.loc[latest_index]
+            watchlist_by_symbol[ticker] = {
+                "symbol": ticker,
+                "newsCount": int(row["article_count"]),
+                "newsCountSource": "Analyzed news",
+                "sentiment": round(float(row["sentiment_mean"]), 3),
+                "newsHeadline": (
+                    str(latest_row.get("summary_text", "")).strip()
+                    if latest_row is not None
+                    else ""
+                ),
+                "newsDate": latest_date.isoformat() if latest_date is not None else "",
+                "newsSource": "Analyzed news" if latest_row is not None else "",
+            }
+
+        def add_news_source(
+            path: Path,
+            ticker_column: str,
+            date_column: str,
+            headline_columns: tuple[str, ...],
+            source_name: str,
+        ) -> None:
+            if not path.exists():
+                return
+            source_df = pd.read_parquet(path)
+            if ticker_column not in source_df.columns:
+                return
+            source_df = source_df.copy()
+            source_df["_watch_symbol"] = (
+                source_df[ticker_column].fillna("").astype(str).str.strip().str.upper()
             )
+            source_df = source_df[
+                source_df["_watch_symbol"].ne("")
+                & ~source_df["_watch_symbol"].isin({"NAN", "NONE"})
+            ]
+            source_df["_watch_date"] = (
+                pd.to_datetime(source_df[date_column], errors="coerce", utc=True)
+                if date_column in source_df.columns
+                else pd.NaT
+            )
+            for ticker, rows in source_df.groupby("_watch_symbol", sort=False):
+                entry = watchlist_by_symbol.get(ticker)
+                if entry is None:
+                    entry = {
+                        "symbol": ticker,
+                        "newsCount": int(len(rows)),
+                        "newsCountSource": source_name,
+                        "sentiment": None,
+                        "newsHeadline": "",
+                        "newsDate": "",
+                        "newsSource": "",
+                    }
+                    watchlist_by_symbol[ticker] = entry
+                dated_rows = rows[rows["_watch_date"].notna()]
+                if not dated_rows.empty:
+                    latest_index = dated_rows["_watch_date"].idxmax()
+                    latest = dated_rows.loc[latest_index]
+                    previous_date = pd.to_datetime(
+                        entry["newsDate"], errors="coerce", utc=True
+                    )
+                    if pd.isna(previous_date) or latest["_watch_date"] > previous_date:
+                        headline = next(
+                            (
+                                str(latest[column]).strip()
+                                for column in headline_columns
+                                if column in latest.index
+                                and pd.notna(latest[column])
+                                and str(latest[column]).strip()
+                            ),
+                            "",
+                        )
+                        entry.update(
+                            newsHeadline=headline,
+                            newsDate=latest["_watch_date"].isoformat(),
+                            newsSource=source_name,
+                        )
+                if not entry["newsHeadline"]:
+                    for _, article in rows.iterrows():
+                        headline = next(
+                            (
+                                str(article[column]).strip()
+                                for column in headline_columns
+                                if column in article.index
+                                and pd.notna(article[column])
+                                and str(article[column]).strip()
+                            ),
+                            "",
+                        )
+                        if headline:
+                            entry.update(newsHeadline=headline, newsSource=source_name)
+                            break
+
+        add_news_source(
+            ROOT / "data" / "output" / "news_live.parquet",
+            "ticker",
+            "date",
+            ("title", "snippet"),
+            "News feed",
+        )
+        add_news_source(
+            ROOT / "data" / "rl2k" / "news.parquet",
+            "ticker",
+            "date",
+            ("snippet", "Description"),
+            "Historical news",
+        )
+        ordered_symbols = sentiment_symbols + sorted(
+            (ticker for ticker in watchlist_by_symbol if ticker not in sentiment_symbols),
+            key=lambda ticker: (-watchlist_by_symbol[ticker]["newsCount"], ticker),
+        )
+
+        # Sentiment ranks are signals, not holdings. Only paper orders create
+        # positions; otherwise showing synthetic quantities is misleading.
+        top_positions = fallback["positions"] if ORDERS else []
 
         avg_sentiment = float(df["sentiment_final"].mean()) if "sentiment_final" in df.columns else 0.0
         sentiment_score = max(-1.0, min(1.0, avg_sentiment))
         bullish_share = float((df["sentiment_final"] > 0).mean()) if "sentiment_final" in df.columns else 0.0
-        risk_score = int(max(18, min(94, round(50 + (1.0 - bullish_share) * 45))))
-        account_balance = 120000.0
-        total_value = account_balance + (sentiment_score * 18000.0) + (bullish_share * 5000.0)
-        pnl = total_value - account_balance
-        buying_power = max(25000.0, 50000.0 + (bullish_share * 6000.0))
-        cash = max(20000.0, buying_power * 0.48)
+        account = _demo_account()
+        account_balance = float(account["accountBalance"])
+        total_value = float(account["totalValue"])
+        pnl = float(account["pnl"])
+        buying_power = float(account["buyingPower"])
+        cash = float(account["cash"])
 
-        history = []
-        for _, row in ticker_summary.head(4).iterrows():
-            side = "Buy" if float(row["sentiment_mean"]) >= 0 else "Sell"
-            history.append(
-                {
-                    "time": pd.Timestamp.now().strftime("%H:%M"),
-                    "side": side,
-                    "symbol": str(row["ticker"]),
-                    "qty": max(6, int(float(row["article_count"]) * 5)),
-                    "price": round(float(row["avg_pos"]) * 150.0 + 90.0, 2),
-                }
-            )
+        history = fallback["history"] if ORDERS else []
 
         trend = round(float(avg_sentiment) * 4.5 + (bullish_share * 2.0), 2)
         portfolio_series = []
         series_seed = float(total_value)
         for idx in range(10):
-            series_seed += (float(idx) - 4.5) * 480.0 + (float(avg_sentiment) * 650.0)
+            series_seed += (float(idx) - 4.5) * max(1.0, abs(pnl) / 10.0)
             portfolio_series.append(int(round(series_seed)))
 
         sector_mix = [
             {"label": "News", "value": max(10, int(bullish_share * 100))},
             {"label": "Momentum", "value": max(12, int((1.0 + avg_sentiment) * 35))},
-            {"label": "Risk", "value": max(10, int(risk_score * 0.45))},
+            {"label": "Risk", "value": max(1, int(float(account.get("openRiskPct", 0.0))))},
             {"label": "Cash", "value": max(6, int((1.0 - bullish_share) * 40))},
         ]
 
@@ -309,22 +634,72 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
             "totalValue": round(total_value, 2),
             "pnl": round(pnl, 2),
             "cash": round(cash, 2),
-            "riskScore": risk_score,
-            "sentiment": round(sentiment_score, 2),
+            "riskScore": round(float(account.get("openRiskPct", 0.0)), 2),
+            "openRisk": account.get("openRisk", 0.0),
+            "openRiskPct": account.get("openRiskPct", 0.0),
+            "sentiment": round(sentiment_score, 3),
             "selectedSentiment": round(
                 float(selected_rows["sentiment_final"].mean())
                 if not selected_rows.empty and "sentiment_final" in selected_rows.columns
                 else sentiment_score,
-                2,
+                3,
             ),
             "trend": trend,
             "positions": top_positions,
             "history": history,
+            "watchlist": [
+                {
+                    **watchlist_by_symbol[ticker],
+                    "label": ticker,
+                    "volume": f'{watchlist_by_symbol[ticker]["newsCount"]} news articles',
+                }
+                for ticker in ordered_symbols
+            ],
             "portfolioSeries": portfolio_series,
             "sectorMix": sector_mix,
             "portfolio": portfolio,
             "newsReviews": news_reviews,
+            "sentimentBackend": os.environ.get("TYCHE_SENTIMENT_BACKENDS", "finbert").split(",")[0].strip(),
+            "sentimentModel": os.environ.get("TYCHE_SENTIMENT_FINBERT_NAME", "ProsusAI/finbert"),
+            "qwenEnabled": (
+                bool(
+                    "qwen_summary" in df.columns
+                    and df["qwen_summary"].fillna("").astype(str).str.strip().ne("").any()
+                )
+            ),
+            "qwenModel": os.environ.get("TYCHE_QWEN_MODEL", "qwen2.5:3b"),
+            "sentimentUpdatedAt": datetime.fromtimestamp(
+                sentiment_path.stat().st_mtime, tz=timezone.utc
+            ).isoformat(),
         }
+        if ORDERS:
+            for key in ("accountBalance", "buyingPower", "totalValue", "pnl", "cash", "unrealizedPnl"):
+                payload[key] = fallback[key]
+            payload["positions"] = fallback["positions"]
+            payload["history"] = fallback["history"]
+        # Do not make the dashboard's critical account/metrics response wait for
+        # a first-time provider request and CPU sentiment inference. The news
+        # panel fetches /api/news/latest separately; once that cache is warm,
+        # reuse it here for the selected-symbol sentiment.
+        cached_live_feed = (
+            _NEWS_SYMBOL_CACHE.get(str(symbol).upper())
+            if symbol
+            else _NEWS_CACHE
+        )
+        live_feed = (
+            _read_latest_news(symbol)
+            if cached_live_feed and time.time() - cached_live_feed[0] < 60
+            else {}
+        )
+        live_reviews = live_feed.get("newsReviews", [])
+        if live_reviews and live_feed.get("sentimentBackend") == "finbert":
+            live_scores = [float(item.get("sentiment_final", 0.0)) for item in live_reviews]
+            payload["newsReviews"] = live_reviews
+            payload["sentiment"] = round(sum(live_scores) / len(live_scores), 3)
+            payload["selectedSentiment"] = payload["sentiment"]
+            payload["sentimentBackend"] = live_feed["sentimentBackend"]
+            payload["sentimentModel"] = live_feed["sentimentModel"]
+            payload["sentimentUpdatedAt"] = live_feed.get("updatedAt")
         payload.update(_demo_account())
         if portfolio["status"] == "ready":
             best = portfolio["best"]
@@ -337,9 +712,14 @@ def _read_dashboard_payload(symbol: str | None = None) -> dict[str, Any]:
             live_series[-1] = float(payload["totalValue"])
             payload["portfolioSeries"] = [round(value, 2) for value in live_series]
             payload["riskMetrics"] = _portfolio_risk_metrics(live_series)
+        payload["symbol"] = (symbol or "AAPL").upper()
         payload["marketMetrics"] = _market_signal_metrics(symbol)
         return payload
     except Exception:
+        # Keep market indicators available even if an optional news provider
+        # fails; the chart/quote path is independent of the news pipeline.
+        fallback["symbol"] = (symbol or "AAPL").upper()
+        fallback["marketMetrics"] = _market_signal_metrics(symbol or "AAPL")
         return fallback
 
 
@@ -414,31 +794,165 @@ def _market_beta(symbol: str) -> float | None:
     if cached and time.time() - cached[0] < 300:
         return cached[1]
     try:
-        import yfinance as yf
-
-        history = yf.download(
-            [symbol, "SPY"],
-            period="1y",
-            interval="1d",
-            auto_adjust=False,
-            progress=False,
-            group_by="column",
-            threads=False,
-        )
-        closes = history["Close"] if "Close" in history else pd.DataFrame()
-        if isinstance(closes, pd.Series):
-            closes = closes.to_frame(symbol)
-        if symbol not in closes.columns or "SPY" not in closes.columns:
-            beta = None
+        if _finnhub_api_key():
+            end = int(time.time())
+            start = end - 365 * 24 * 60 * 60
+            symbol_data = _finnhub_candles(symbol, "D", start, end, cache_ttl=300)
+            benchmark_data = _finnhub_candles("SPY", "D", start, end, cache_ttl=300)
+            aligned = {
+                candle["date"][:10]: candle["c"]
+                for candle in symbol_data
+            }
+            benchmark = {
+                candle["date"][:10]: candle["c"]
+                for candle in benchmark_data
+            }
+            dates = sorted(aligned.keys() & benchmark.keys())
+            if len(dates) < 2:
+                beta = None
+            else:
+                returns = pd.DataFrame(
+                    {
+                        symbol: [aligned[day] for day in dates],
+                        "SPY": [benchmark[day] for day in dates],
+                    }
+                ).pct_change().dropna()
+                covariance = returns[symbol].cov(returns["SPY"])
+                variance = returns["SPY"].var()
+                beta = round(float(covariance / variance), 2) if variance and pd.notna(covariance) else None
         else:
-            returns = closes[[symbol, "SPY"]].pct_change().dropna()
-            covariance = returns[symbol].cov(returns["SPY"])
-            variance = returns["SPY"].var()
-            beta = round(float(covariance / variance), 2) if variance and pd.notna(covariance) else None
-    except (ImportError, ValueError, KeyError, TypeError):
+            import yfinance as yf
+
+            history = yf.download(
+                [symbol, "SPY"],
+                period="1y",
+                interval="1d",
+                auto_adjust=False,
+                progress=False,
+                group_by="column",
+                threads=False,
+            )
+            closes = history["Close"] if "Close" in history else pd.DataFrame()
+            if isinstance(closes, pd.Series):
+                closes = closes.to_frame(symbol)
+            if symbol not in closes.columns or "SPY" not in closes.columns:
+                beta = None
+            else:
+                returns = closes[[symbol, "SPY"]].pct_change().dropna()
+                covariance = returns[symbol].cov(returns["SPY"])
+                variance = returns["SPY"].var()
+                beta = round(float(covariance / variance), 2) if variance and pd.notna(covariance) else None
+    except (ImportError, ValueError, KeyError, TypeError, RuntimeError, requests.RequestException):
         beta = None
     _BETA_CACHE[symbol] = (time.time(), beta)
     return beta
+
+
+def _finnhub_api_key() -> str:
+    return (
+        os.environ.get("TYCHE_FINNHUB_API_KEY", "").strip()
+        or os.environ.get("FINNHUB_API_KEY", "").strip()
+    )
+
+
+class FinnhubMarketDataError(RuntimeError):
+    def __init__(self, endpoint: str, status_code: int) -> None:
+        super().__init__(f"Finnhub {endpoint} request failed (HTTP {status_code})")
+        self.status_code = status_code
+
+
+def _finnhub_get(
+    endpoint: str,
+    params: dict[str, Any],
+    *,
+    cache_ttl: int = 15,
+) -> dict[str, Any]:
+    api_key = _finnhub_api_key()
+    if not api_key:
+        raise RuntimeError("Finnhub API key is not configured")
+
+    cache_params = tuple(sorted((key, str(value)) for key, value in params.items()))
+    cache_key = (endpoint, cache_params)
+    cached = _MARKET_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < cache_ttl:
+        return cached[1]
+
+    response = requests.get(
+        f"https://finnhub.io/api/v1/{endpoint}",
+        params={**params, "token": api_key},
+        timeout=15,
+    )
+    if not response.ok:
+        raise FinnhubMarketDataError(endpoint, response.status_code)
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError(f"Finnhub {endpoint} returned an invalid response")
+    if payload.get("error"):
+        raise RuntimeError(f"Finnhub {endpoint} request was rejected")
+    _MARKET_CACHE[cache_key] = (time.time(), payload)
+    return payload
+
+
+def _finnhub_candles(
+    symbol: str,
+    resolution: str,
+    start: int,
+    end: int,
+    *,
+    cache_ttl: int = 30,
+) -> list[dict[str, Any]]:
+    payload = _finnhub_get(
+        "stock/candle",
+        {"symbol": symbol.upper(), "resolution": resolution, "from": start, "to": end},
+        cache_ttl=cache_ttl,
+    )
+    if payload.get("s") == "no_data":
+        return []
+    if payload.get("s") != "ok":
+        raise ValueError(f"Finnhub returned no valid candle data for {symbol}")
+
+    timestamps = payload.get("t", [])
+    opens = payload.get("o", [])
+    highs = payload.get("h", [])
+    lows = payload.get("l", [])
+    closes = payload.get("c", [])
+    if not all(len(values) == len(timestamps) for values in (opens, highs, lows, closes)):
+        raise ValueError(f"Finnhub returned incomplete candle data for {symbol}")
+    return [
+        {
+            "o": float(open_price),
+            "h": float(high),
+            "l": float(low),
+            "c": float(close),
+            "date": datetime.fromtimestamp(int(timestamp), tz=timezone.utc).isoformat(),
+        }
+        for timestamp, open_price, high, low, close in zip(timestamps, opens, highs, lows, closes)
+    ]
+
+
+def _local_market_candles(symbol: str, limit: int) -> list[dict[str, Any]]:
+    path = ROOT / "data" / "rl2k" / "ohlcv.parquet"
+    watchlist_path = ROOT / "data" / "rl2k" / "watchlist_ohlcv.parquet"
+    if watchlist_path.exists():
+        watchlist = pd.read_parquet(watchlist_path)
+        if symbol.upper() in watchlist["symbol"].astype(str).str.upper().unique():
+            path = watchlist_path
+    if not path.exists():
+        return []
+
+    frame = pd.read_parquet(path)
+    frame["symbol"] = frame["symbol"].astype(str).str.upper()
+    frame = frame[frame["symbol"] == symbol.upper()].sort_values("date").tail(limit)
+    return [
+        {
+            "o": float(row.open),
+            "h": float(row.high),
+            "l": float(row.low),
+            "c": float(row.close),
+            "date": pd.Timestamp(row.date).strftime("%Y-%m-%d"),
+        }
+        for row in frame.itertuples()
+    ]
 
 
 def _market_signal_metrics(symbol: str | None) -> dict[str, float | None]:
@@ -470,6 +984,75 @@ def _market_signal_metrics(symbol: str | None) -> dict[str, float | None]:
 
 def _read_market(symbol: str = "AAPL", period: str = "1M") -> dict[str, Any]:
     period_upper = period.upper()
+    if _finnhub_api_key():
+        if period_upper == "D1":
+            market = _read_live_market(symbol)
+            market["period"] = period_upper
+            market["source"] = "Finnhub live quote + 1-minute candles"
+            return market
+
+        end = int(time.time())
+        resolutions = {"M1": ("1", 1), "M5": ("5", 7), "M15": ("15", 30), "H1": ("60", 90)}
+        source = "Finnhub historical candles"
+        if period_upper in resolutions:
+            resolution, lookback_days = resolutions[period_upper]
+            limit = 120
+            try:
+                candles = _finnhub_candles(
+                    symbol,
+                    resolution,
+                    end - lookback_days * 24 * 60 * 60,
+                    end,
+                )[-limit:]
+            except FinnhubMarketDataError as exc:
+                if exc.status_code != 403:
+                    raise
+                candles = _local_market_candles(symbol, limit)
+                source = "Local OHLCV fallback (Finnhub candle access denied)"
+        elif period_upper in {"W1", "1W"}:
+            limit = 5
+            try:
+                candles = _finnhub_candles(symbol, "D", end - 14 * 24 * 60 * 60, end)[-limit:]
+            except FinnhubMarketDataError as exc:
+                if exc.status_code != 403:
+                    raise
+                candles = _local_market_candles(symbol, limit)
+                source = "Local OHLCV fallback (Finnhub candle access denied)"
+        elif period_upper in {"MN1", "1M"}:
+            limit = 22
+            try:
+                candles = _finnhub_candles(symbol, "D", end - 60 * 24 * 60 * 60, end)[-limit:]
+            except FinnhubMarketDataError as exc:
+                if exc.status_code != 403:
+                    raise
+                candles = _local_market_candles(symbol, limit)
+                source = "Local OHLCV fallback (Finnhub candle access denied)"
+        else:
+            raise ValueError(f"Unsupported chart period: {period}")
+        if not candles:
+            raise ValueError(
+                f"No candles available for {symbol} ({period_upper}); "
+                "Finnhub denied candle access and no local OHLCV data was found."
+            )
+        latest = candles[-1]
+        previous = candles[-2]["c"] if len(candles) > 1 else latest["o"]
+        return {
+            "symbol": symbol.upper(),
+            "period": period_upper,
+            "candles": candles,
+            "last": latest["c"],
+            "change": ((latest["c"] / previous) - 1.0) * 100.0 if previous else 0.0,
+            "source": source,
+        }
+
+    if period_upper == "D1":
+        try:
+            live = _read_live_market(symbol)
+            live["period"] = period_upper
+            live["source"] = "Yahoo Finance live 1-minute candles"
+            return live
+        except (ImportError, ValueError, KeyError, IndexError, requests.RequestException):
+            pass
     alpha_key = os.environ.get("ALPHAVANTAGE_API_KEY", "").strip()
     intraday_intervals = {"M1": "1min", "M5": "5min", "M15": "15min", "M30": "30min", "H1": "60min"}
     if alpha_key and period_upper in intraday_intervals:
@@ -557,6 +1140,37 @@ def _read_market(symbol: str = "AAPL", period: str = "1M") -> dict[str, Any]:
         if symbol.upper() in watchlist["symbol"].astype(str).str.upper().unique():
             path = watchlist_path
     if not path.exists():
+        try:
+            import yfinance as yf
+
+            history = yf.Ticker(symbol.upper()).history(
+                period="5d" if period_upper == "W1" else "1mo",
+                interval="1d",
+                auto_adjust=False,
+            ).dropna(subset=["Open", "High", "Low", "Close"])
+            if not history.empty:
+                candles = [
+                    {
+                        "o": float(row.Open),
+                        "h": float(row.High),
+                        "l": float(row.Low),
+                        "c": float(row.Close),
+                        "date": pd.Timestamp(index).strftime("%Y-%m-%d"),
+                    }
+                    for index, row in history.tail(5 if period_upper == "W1" else 22).iterrows()
+                ]
+                latest = candles[-1]
+                previous = candles[-2]["c"] if len(candles) > 1 else latest["o"]
+                return {
+                    "symbol": symbol.upper(),
+                    "period": period_upper,
+                    "candles": candles,
+                    "last": latest["c"],
+                    "change": ((latest["c"] / previous) - 1.0) * 100.0 if previous else 0.0,
+                    "source": "Yahoo Finance daily history",
+                }
+        except (ImportError, ValueError, KeyError, TypeError):
+            pass
         raise FileNotFoundError(f"market data not found: {path}")
     frame = pd.read_parquet(path)
     frame["symbol"] = frame["symbol"].astype(str).str.upper()
@@ -592,6 +1206,43 @@ def _read_market(symbol: str = "AAPL", period: str = "1M") -> dict[str, Any]:
 
 
 def _read_live_market(symbol: str = "AAPL") -> dict[str, Any]:
+    if _finnhub_api_key():
+        quote = _finnhub_get("quote", {"symbol": symbol.upper()}, cache_ttl=10)
+        last = float(quote.get("c") or 0.0)
+        previous_close = float(quote.get("pc") or 0.0)
+        if last <= 0:
+            raise ValueError(f"Finnhub has no live quote for {symbol}")
+        end = int(time.time())
+        try:
+            candles = _finnhub_candles(
+                symbol,
+                "1",
+                end - 24 * 60 * 60,
+                end,
+                cache_ttl=10,
+            )[-120:]
+            source = "Finnhub"
+        except FinnhubMarketDataError as exc:
+            if exc.status_code != 403:
+                raise
+            candles = _local_market_candles(symbol, 120)
+            source = "Finnhub live quote + local OHLCV candles" if candles else "Finnhub live quote"
+        return {
+            "symbol": symbol.upper(),
+            "period": "LIVE",
+            "candles": candles,
+            "last": last,
+            "change": float(quote.get("dp") or (
+                ((last / previous_close) - 1.0) * 100.0 if previous_close else 0.0
+            )),
+            "timestamp": (
+                datetime.fromtimestamp(int(quote["t"]), tz=timezone.utc).isoformat()
+                if quote.get("t")
+                else datetime.now(timezone.utc).isoformat()
+            ),
+            "source": source,
+        }
+
     import yfinance as yf
 
     history = yf.Ticker(symbol.upper()).history(period="1d", interval="1m", auto_adjust=False)
@@ -620,8 +1271,148 @@ def _read_live_market(symbol: str = "AAPL") -> dict[str, Any]:
     }
 
 
+def _read_latest_news(symbol: str | None = None) -> dict[str, Any]:
+    """Return fresh raw news for the terminal when no processed artifact exists."""
+    global _NEWS_CACHE
+    now = time.time()
+    cache_key = symbol.upper() if symbol else None
+    cached_symbol = _NEWS_SYMBOL_CACHE.get(cache_key) if cache_key else None
+    if cached_symbol and now - cached_symbol[0] < 60:
+        payload = cached_symbol[1]
+    elif not symbol and _NEWS_CACHE and now - _NEWS_CACHE[0] < 60:
+        payload = _NEWS_CACHE[1]
+    else:
+        api_key = (
+            os.environ.get("TYCHE_FINNHUB_API_KEY", "").strip()
+            or os.environ.get("FINNHUB_API_KEY", "").strip()
+        )
+        rows: list[dict[str, Any]] = []
+        source = "local news cache"
+        if api_key:
+            symbols = [symbol.upper()] if symbol else ["AAPL", "MSFT", "NVDA", "AMD"]
+            for ticker in symbols:
+                end = datetime.now(timezone.utc).date()
+                start = end - pd.Timedelta(days=7)
+                response = requests.get(
+                    "https://finnhub.io/api/v1/company-news",
+                    params={"symbol": ticker, "from": str(start), "to": str(end), "token": api_key},
+                    timeout=15,
+                )
+                response.raise_for_status()
+                for item in response.json():
+                    headline = str(item.get("headline") or "").strip()
+                    summary = str(item.get("summary") or "").strip()
+                    if headline or summary:
+                        rows.append(
+                            {
+                                "ticker": ticker,
+                                "valid_time": datetime.fromtimestamp(
+                                    int(item.get("datetime", 0)), tz=timezone.utc
+                                ).isoformat(),
+                                "summary_text": f"{headline} {summary}".strip(),
+                                "qwen_summary": "",
+                                "qwen_event": "",
+                                "qwen_rationale": "",
+                                "qwen_signal_explanation": "",
+                                "sentiment_final": 0.0,
+                                "raw_score": 0.0,
+                                "agg_p_pos": 0.0,
+                                "agg_p_neg": 0.0,
+                                "agg_p_neu": 0.0,
+                            }
+                        )
+            source = "Finnhub live"
+        else:
+            raw_path = ROOT / "data" / "rl2k" / "news.parquet"
+            if raw_path.exists():
+                frame = pd.read_parquet(raw_path)
+                if symbol and "ticker" in frame.columns:
+                    frame = frame[frame["ticker"].astype(str).str.upper().eq(symbol.upper())]
+                for row in frame.sort_values("date", ascending=False).head(24).itertuples():
+                    rows.append(
+                        {
+                            "ticker": str(getattr(row, "ticker", symbol or "NEWS")),
+                            "valid_time": str(getattr(row, "date", "")),
+                            "summary_text": str(getattr(row, "snippet", "")),
+                            "qwen_summary": "",
+                            "qwen_event": "",
+                            "qwen_rationale": "",
+                            "qwen_signal_explanation": "",
+                            "sentiment_final": 0.0,
+                            "raw_score": 0.0,
+                            "agg_p_pos": 0.0,
+                            "agg_p_neg": 0.0,
+                            "agg_p_neu": 0.0,
+                        }
+                    )
+            else:
+                try:
+                    import yfinance as yf
+
+                    symbols = [symbol.upper()] if symbol else ["AAPL", "MSFT", "NVDA", "AMD"]
+                    for ticker in symbols:
+                        for item in (yf.Ticker(ticker).news or [])[:12]:
+                            content = item.get("content", item)
+                            title = str(content.get("title") or "").strip()
+                            summary = str(content.get("summary") or content.get("description") or "").strip()
+                            timestamp = content.get("pubDate") or content.get("providerPublishTime") or ""
+                            if isinstance(timestamp, (int, float)):
+                                timestamp = datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+                            if title or summary:
+                                rows.append(
+                                    {
+                                        "ticker": ticker,
+                                        "valid_time": str(timestamp),
+                                        "summary_text": f"{title} {summary}".strip(),
+                                        "qwen_summary": "",
+                                        "qwen_event": "",
+                                        "qwen_rationale": "",
+                                        "qwen_signal_explanation": "",
+                                        "sentiment_final": 0.0,
+                                        "raw_score": 0.0,
+                                        "agg_p_pos": 0.0,
+                                        "agg_p_neg": 0.0,
+                                        "agg_p_neu": 0.0,
+                                    }
+                                )
+                    source = "Yahoo Finance latest news"
+                except (ImportError, ValueError, TypeError, KeyError):
+                    pass
+        rows.sort(key=lambda item: item["valid_time"], reverse=True)
+        # The dashboard displays at most 24 reviews. Scoring the full provider
+        # response makes the first page load block on hundreds of CPU inferences.
+        scored_by_finbert = _score_live_news_with_finbert(rows[:24])
+        if not scored_by_finbert:
+            for row in rows:
+                row.update(_local_news_sentiment(row.get("summary_text", "")))
+        payload = {
+            "newsReviews": rows[:24],
+            "source": source,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+            "configured": bool(api_key),
+            "sentimentBackend": "finbert" if scored_by_finbert else "local-lexicon",
+            "sentimentModel": os.environ.get(
+                "TYCHE_SENTIMENT_FINBERT_NAME", "ProsusAI/finbert"
+            ) if scored_by_finbert else "local-news-lexicon",
+        }
+        _NEWS_CACHE = (now, payload)
+    if symbol:
+        if cache_key not in _NEWS_SYMBOL_CACHE or not cached_symbol or now - cached_symbol[0] >= 60:
+            payload = {**payload, "newsReviews": [
+                item for item in payload.get("newsReviews", [])
+                if str(item.get("ticker", "")).upper() == cache_key
+            ]}
+            _NEWS_SYMBOL_CACHE[cache_key] = (now, payload)
+    return payload
+
+
 class TycheHandler(BaseHTTPRequestHandler):
     server_version = "TycheLocalHTTP/1.0"
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self.send_response(204)
+        self._add_cors_headers()
+        self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -635,7 +1426,18 @@ class TycheHandler(BaseHTTPRequestHandler):
 
         if route == "/api/dashboard":
             symbol = (params.get("symbol") or [None])[0]
-            self._send_json(200, _read_dashboard_payload(symbol))
+            try:
+                self._send_json(200, _read_dashboard_payload(symbol))
+            except Exception as exc:
+                self._send_json(503, {"ok": False, "error": str(exc)})
+            return
+
+        if route == "/api/news/latest":
+            try:
+                symbol = (params.get("symbol") or [None])[0]
+                self._send_json(200, _read_latest_news(symbol))
+            except Exception as exc:
+                self._send_json(503, {"ok": False, "error": str(exc), "newsReviews": []})
             return
 
         if route == "/api/orders":
@@ -650,6 +1452,28 @@ class TycheHandler(BaseHTTPRequestHandler):
             from tyche.execution.ibkr import IBKRAdapter
 
             self._send_json(200, {"ibkr": IBKRAdapter().status(), "alpaca": ALPACA.status()})
+            return
+
+        if route in {"/api/alpaca/account", "/api/broker/account"}:
+            try:
+                if not ALPACA.configured:
+                    self._send_json(200, {"ok": False, "configured": False, "error": "Alpaca credentials not configured"})
+                    return
+                acc = ALPACA.get_account()
+                self._send_json(200, {"ok": True, "configured": True, "account": acc})
+            except Exception as exc:
+                self._send_json(502, {"ok": False, "error": str(exc)})
+            return
+
+        if route in {"/api/alpaca/positions", "/api/broker/positions"}:
+            try:
+                if not ALPACA.configured:
+                    self._send_json(200, {"ok": False, "configured": False, "positions": []})
+                    return
+                pos = ALPACA.get_positions()
+                self._send_json(200, {"ok": True, "configured": True, "positions": pos})
+            except Exception as exc:
+                self._send_json(502, {"ok": False, "error": str(exc)})
             return
 
         if route == "/api/execution/status":
@@ -710,6 +1534,29 @@ class TycheHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"ok": False, "error": f"static asset not found: {route}"})
             return
 
+        if route == "/api/news/status":
+            with _NEWS_LOCK:
+                status = dict(_NEWS_STATUS)
+            news_paths = [
+                ROOT / "data" / "output" / "news_sentiment.parquet",
+                ROOT / "data" / "output" / "news_sentiment_local.parquet",
+            ]
+            news_path = next((path for path in news_paths if path.is_file()), None)
+            updated_at = None
+            fresh = False
+            if news_path is not None:
+                modified_at = news_path.stat().st_mtime
+                updated_at = datetime.fromtimestamp(modified_at, tz=timezone.utc).isoformat()
+                fresh = time.time() - modified_at <= 24 * 60 * 60
+            status["hasData"] = news_path is not None
+            status["updatedAt"] = updated_at
+            status["fresh"] = fresh
+            status["qwenEnabled"] = os.environ.get("TYCHE_QWEN_ENRICHMENT_ENABLED", "false").lower() == "true"
+            status["qwenModel"] = os.environ.get("TYCHE_QWEN_MODEL", "qwen2.5:3b")
+            status["sentimentBackend"] = os.environ.get("TYCHE_SENTIMENT_BACKENDS", "finbert").split(",")[0].strip()
+            self._send_json(200, {"ok": True, **status})
+            return
+
         if route == "/run-news":
             limit = int((params.get("limit") or ["5"])[0])
             input_path = (params.get("input") or [None])[0]
@@ -734,22 +1581,19 @@ class TycheHandler(BaseHTTPRequestHandler):
         if route == "/run-portfolio":
             holding = int((params.get("holding") or ["5"])[0])
             try:
-                from dataclasses import replace
-
                 from tyche.portfolio.config import default_config
-                from tyche.portfolio.run import config_for_holding, run_experiment
+                from tyche.portfolio.run import config_for_holding, run_grid
 
                 cfg = config_for_holding(default_config(), holding)
-                results = run_experiment(cfg)
-                metrics = results["portfolio_metrics"]
+                combined = run_grid(cfg, (holding,))
+                metrics = combined.reset_index().to_dict(orient="records")
                 self._send_json(
                     200,
                     {
                         "ok": True,
                         "holding": holding,
-                        "models": list(metrics.keys()),
-                        "metrics": {k: v for k, v in metrics.items()},
-                        "walk_forward": results.get("walk_forward", {}),
+                        "models": [row["model"] for row in metrics],
+                        "metrics": metrics,
                     },
                 )
             except Exception as exc:  # pragma: no cover - runtime diagnostic path
@@ -783,13 +1627,64 @@ class TycheHandler(BaseHTTPRequestHandler):
                 quantity = float(data["quantity"])
                 if side not in {"Buy", "Sell"} or quantity <= 0:
                     raise ValueError("side must be Buy or Sell and quantity must be positive")
-                market = _read_market(symbol, "1D")
-                order = PAPER_AUTOPILOT.record_order(symbol, side, quantity, float(market["last"]))
+                price = _paper_market_price(symbol)
+                PAPER_AUTOPILOT.validate_order(symbol, side, quantity, price)
+                extra_fields: dict[str, Any] = {}
+                if ALPACA.configured and data.get("submit_to_broker", True):
+                    try:
+                        alp_order = ALPACA.submit_market_order(symbol, side, quantity, confirm=True)
+                        extra_fields["alpacaOrderId"] = alp_order.get("id")
+                        extra_fields["broker"] = "Alpaca Paper"
+                    except Exception as alp_err:
+                        extra_fields["alpacaError"] = str(alp_err)
+                        extra_fields["broker"] = "Simulated (Alpaca Error)"
+                order = PAPER_AUTOPILOT.record_order(symbol, side, quantity, price, **extra_fields)
+                order = PAPER_AUTOPILOT.transition(
+                    order["id"],
+                    "Filled",
+                    filled_time=datetime.now(timezone.utc).isoformat(),
+                    filled_price=order["price"],
+                )
                 self._send_json(201, {"ok": True, "order": order, "orders": ORDERS})
             except (KeyError, ValueError, json.JSONDecodeError) as exc:
                 self._send_json(400, {"ok": False, "error": str(exc)})
             except Exception as exc:
                 self._send_json(422, {"ok": False, "error": str(exc)})
+            return
+
+        if route in {"/api/alpaca/config", "/api/broker/config"}:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                api_key = str(data.get("apiKey") or data.get("api_key") or "").strip()
+                secret_key = str(data.get("secretKey") or data.get("secret_key") or "").strip()
+                if not api_key or not secret_key:
+                    self._send_json(400, {"ok": False, "error": "Both apiKey and secretKey are required"})
+                    return
+                # Test credentials directly against Alpaca Paper API
+                test_adapter = AlpacaPaperAdapter(api_key=api_key, secret_key=secret_key)
+                account_info = test_adapter.get_account()
+
+                # Update running state
+                os.environ["ALPACA_API_KEY"] = api_key
+                os.environ["ALPACA_SECRET_KEY"] = secret_key
+                ALPACA.update_credentials(api_key, secret_key)
+                PAPER_AUTOPILOT.broker_adapter = ALPACA
+
+                # Persist to .env files
+                _update_env_keys({
+                    "ALPACA_API_KEY": api_key,
+                    "ALPACA_SECRET_KEY": secret_key,
+                })
+
+                self._send_json(200, {
+                    "ok": True,
+                    "message": "Alpaca Paper Trading connected successfully",
+                    "account": account_info,
+                    "alpaca": ALPACA.status(),
+                })
+            except Exception as exc:
+                self._send_json(400, {"ok": False, "error": f"Alpaca verification failed: {exc}"})
             return
         if route == "/api/broker/orders":
             try:
@@ -863,22 +1758,140 @@ class TycheHandler(BaseHTTPRequestHandler):
             holding = int(data.get("holding", 5))
             try:
                 from tyche.portfolio.config import default_config
-                from tyche.portfolio.run import config_for_holding, run_experiment
+                from tyche.portfolio.run import config_for_holding, run_grid
 
                 cfg = config_for_holding(default_config(), holding)
-                results = run_experiment(cfg)
+                combined = run_grid(cfg, (holding,))
+                metrics = combined.reset_index().to_dict(orient="records")
                 self._send_json(
                     200,
                     {
                         "ok": True,
                         "holding": holding,
-                        "models": list(results["portfolio_metrics"].keys()),
-                        "metrics": {k: v for k, v in results["portfolio_metrics"].items()},
-                        "walk_forward": results.get("walk_forward", {}),
+                        "models": [row["model"] for row in metrics],
+                        "metrics": metrics,
                     },
                 )
             except Exception as exc:
                 self._send_json(503, {"ok": False, "error": str(exc)})
+            return
+
+        if route == "/api/news/refresh":
+            import threading as _threading
+
+            def _bg_news_refresh() -> None:
+                with _NEWS_LOCK:
+                    if _NEWS_STATUS["running"]:
+                        return
+                    _NEWS_STATUS["running"] = True
+                    _NEWS_STATUS["lastError"] = None
+                try:
+                    use_qwen = os.environ.get("TYCHE_NEWS_REFRESH_QWEN", "").strip() in {"1", "true", "yes"}
+                    symbols_env = os.environ.get("TYCHE_WATCHLIST", "AAPL,MSFT,NVDA,AMD")
+                    symbols = [s.strip().upper() for s in symbols_env.split(",") if s.strip()]
+                    api_key = (
+                        os.environ.get("TYCHE_FINNHUB_API_KEY", "").strip()
+                        or os.environ.get("FINNHUB_API_KEY", "").strip()
+                    )
+                    rows: list[dict[str, Any]] = []
+                    if api_key:
+                        import requests as _req
+                        end = datetime.now(timezone.utc).date()
+                        start = end - pd.Timedelta(days=7)
+                        for ticker in symbols:
+                            resp = _req.get(
+                                "https://finnhub.io/api/v1/company-news",
+                                params={"symbol": ticker, "from": str(start), "to": str(end), "token": api_key},
+                                timeout=15,
+                            )
+                            if resp.status_code == 200:
+                                for item in resp.json():
+                                    headline = str(item.get("headline") or "").strip()
+                                    summary = str(item.get("summary") or "").strip()
+                                    if headline or summary:
+                                        rows.append({
+                                            "ticker": ticker,
+                                            "valid_time": datetime.fromtimestamp(
+                                                int(item.get("datetime", 0)), tz=timezone.utc
+                                            ).isoformat(),
+                                            "summary_text": f"{headline} {summary}".strip(),
+                                            "qwen_summary": "", "qwen_event": "",
+                                            "qwen_rationale": "", "qwen_signal_explanation": "",
+                                            "sentiment_final": 0.0, "raw_score": 0.0,
+                                            "agg_p_pos": 0.0, "agg_p_neg": 0.0, "agg_p_neu": 0.0,
+                                        })
+                    else:
+                        # Yahoo Finance fallback
+                        import yfinance as yf
+                        for ticker in symbols:
+                            for item in (yf.Ticker(ticker).news or [])[:12]:
+                                content = item.get("content", item)
+                                title = str(content.get("title") or "").strip()
+                                summary = str(content.get("summary") or content.get("description") or "").strip()
+                                timestamp = content.get("pubDate") or content.get("providerPublishTime") or ""
+                                if isinstance(timestamp, (int, float)):
+                                    timestamp = datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+                                if title or summary:
+                                    rows.append({
+                                        "ticker": ticker,
+                                        "valid_time": str(timestamp),
+                                        "summary_text": f"{title} {summary}".strip(),
+                                        "qwen_summary": "", "qwen_event": "",
+                                        "qwen_rationale": "", "qwen_signal_explanation": "",
+                                        "sentiment_final": 0.0, "raw_score": 0.0,
+                                        "agg_p_pos": 0.0, "agg_p_neg": 0.0, "agg_p_neu": 0.0,
+                                    })
+                    if rows and use_qwen:
+                        try:
+                            from tyche.news.agents.qwen_enricher import enrich
+                            df_tmp = pd.DataFrame(rows)
+                            df_tmp = enrich(df_tmp)
+                            rows = df_tmp.to_dict(orient="records")
+                        except Exception:
+                            pass
+                    sentiment_backend = "finbert"
+                    if rows and not _score_live_news_with_finbert(rows):
+                        sentiment_backend = "local-lexicon"
+                        for row in rows:
+                            row.update(_local_news_sentiment(row.get("summary_text", "")))
+                    out_path = ROOT / "data" / "output" / "news_sentiment_local.parquet"
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    pd.DataFrame(rows).to_parquet(out_path, index=False)
+                    with _NEWS_LOCK:
+                        _NEWS_STATUS["lastRows"] = len(rows)
+                        _NEWS_STATUS["lastRun"] = datetime.now(timezone.utc).isoformat()
+                        _NEWS_STATUS["sentimentBackend"] = sentiment_backend
+                except Exception as exc:
+                    with _NEWS_LOCK:
+                        _NEWS_STATUS["lastError"] = str(exc)
+                finally:
+                    with _NEWS_LOCK:
+                        _NEWS_STATUS["running"] = False
+
+            _threading.Thread(target=_bg_news_refresh, daemon=True, name="news-refresh").start()
+            with _NEWS_LOCK:
+                status = dict(_NEWS_STATUS)
+            self._send_json(202, {"ok": True, "message": "News refresh started in background", **status})
+            return
+
+        if route == "/api/positions/close":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                data = json.loads(self.rfile.read(length).decode("utf-8") or "{}") if length else {}
+                symbol = str(data.get("symbol", "")).upper()
+                closed = []
+                for order in list(ORDERS):
+                    if order.get("status") == "Filled" and (not symbol or str(order.get("symbol", "")).upper() == symbol):
+                        close_side = "Sell" if order.get("side") == "Buy" else "Buy"
+                        qty = float(order.get("qty", 0.0))
+                        price = float(_read_live_market(str(order["symbol"])).get("last", order.get("price", 0.0)))
+                        close_order = PAPER_AUTOPILOT.record_order(str(order["symbol"]).upper(), close_side, qty, price, mode="manual-close")
+                        PAPER_AUTOPILOT.transition(close_order["id"], "Filled",
+                            filled_time=datetime.now(timezone.utc).isoformat(), filled_price=price)
+                        closed.append(close_order)
+                self._send_json(200, {"ok": True, "closed": len(closed), "orders": ORDERS})
+            except Exception as exc:
+                self._send_json(500, {"ok": False, "error": str(exc)})
             return
 
         self._send_json(404, {"ok": False, "error": f"route not found: {route}"})
@@ -887,9 +1900,15 @@ class TycheHandler(BaseHTTPRequestHandler):
         # Keep logs concise for local usage.
         return
 
+    def _add_cors_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(status)
+        self._add_cors_headers()
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -903,6 +1922,7 @@ class TycheHandler(BaseHTTPRequestHandler):
         mime_type, _ = mimetypes.guess_type(str(file_path))
         content = file_path.read_bytes()
         self.send_response(200)
+        self._add_cors_headers()
         self.send_header("Content-Type", mime_type or "application/octet-stream")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()

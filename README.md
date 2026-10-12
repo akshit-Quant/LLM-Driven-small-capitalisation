@@ -118,6 +118,32 @@ Individual research stages and experiments are documented in the
 project configuration files and environment variables described in
 [`docs/configuration.md`](docs/configuration.md).
 
+## Local dashboard and Alpaca paper trading
+
+Start the local dashboard from the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\local_http_server.py
+```
+
+Open `http://127.0.0.1:8000`, configure an Alpaca **paper** account, and start
+paper trading from the dashboard. The autopilot monitors stop-loss and
+take-profit levels and submits a closing market order to Alpaca for positions
+it opened there. Simulated orders remain simulated; the adapter only connects
+to Alpaca's paper API, not its live-trading endpoint. Finnhub supplies live
+quotes when `FINNHUB_API_KEY` or `TYCHE_FINNHUB_API_KEY` is configured. If the
+key cannot access Finnhub candle history, charts use the local OHLCV data when
+available while quotes continue to come from Finnhub. The autopilot prefers
+current scored news for its sentiment signals over an older local artifact.
+Refreshing news scores all fetched articles with FinBERT (or the local lexicon
+if FinBERT is unavailable) and saves the computed values to
+`data/output/news_sentiment_local.parquet`. Alpaca paper entries are evaluated
+every 30 seconds by default, with up to 20 distinct open positions and a $500
+gross-notional cap per position; each symbol is limited to one open or pending
+entry at a time. These controls do not make Tyche a high-frequency trading
+system: it uses periodic REST requests and news/portfolio signals, not a
+low-latency market-data feed. See `.env.example` for the paper-autopilot limits.
+
 ## Documentation
 
 | Section | Description |

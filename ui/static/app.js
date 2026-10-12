@@ -1,80 +1,37 @@
+const API_BASE = (window.location.protocol === 'http:' || window.location.protocol === 'https:')
+  ? (window.location.port === '8000' ? '' : `${window.location.protocol}//${window.location.hostname}:8000`)
+  : 'http://localhost:8000';
+
+function apiUrl(path) {
+  if (!path || path.startsWith('http://') || path.startsWith('https://')) return path;
+  return `${API_BASE}${path.startsWith('/') ? path : '/' + path}`;
+}
+
 let dashboardState = {
-  accountBalance: 120000,
-  buyingPower: 54000,
-  totalValue: 142580,
-  pnl: 12842,
-  cash: 26000,
-  riskScore: 72,
-  sentiment: 0.74,
-  trend: 3.42,
-  portfolio: {
-    status: 'unavailable',
-    message: 'Portfolio backtest not run'
-  },
-  positions: [
-    { symbol: 'NVDA', name: 'NVIDIA', quantity: 36, price: 132.6, change: 2.84 },
-    { symbol: 'MSFT', name: 'Microsoft', quantity: 24, price: 418.1, change: 1.67 },
-    { symbol: 'AMD', name: 'AMD', quantity: 52, price: 148.2, change: -0.78 },
-    { symbol: 'AAPL', name: 'Apple', quantity: 18, price: 212.7, change: 0.92 }
-  ],
-  history: [
-    { time: '09:45', side: 'Buy', symbol: 'NVDA', qty: 14, price: 130.8 },
-    { time: '11:12', side: 'Sell', symbol: 'MSFT', qty: 8, price: 410.2 },
-    { time: '13:05', side: 'Buy', symbol: 'AMD', qty: 22, price: 146.9 },
-    { time: '15:42', side: 'Buy', symbol: 'AAPL', qty: 10, price: 210.5 }
-  ],
-  watchlist: [
-    { symbol: 'NVDA', last: 132.60, change: 2.84, volume: 'Stock' },
-    { symbol: 'MSFT', last: 418.10, change: 1.67, volume: 'Stock' },
-    { symbol: 'AAPL', last: 212.70, change: 0.92, volume: 'Stock' },
-    { symbol: 'AMD', last: 148.20, change: -0.78, volume: 'Stock' },
-    { symbol: 'GC=F', label: 'Gold', last: 0, change: 0, volume: 'Commodity' },
-    { symbol: 'CL=F', label: 'Crude Oil', last: 0, change: 0, volume: 'Commodity' },
-    { symbol: 'SI=F', label: 'Silver', last: 0, change: 0, volume: 'Commodity' },
-    { symbol: 'NG=F', label: 'Natural Gas', last: 0, change: 0, volume: 'Commodity' }
-  ],
-  heatmap: [
-    ['buy', 'buy', 'neutral', 'sell', 'buy', 'buy'],
-    ['buy', 'sell', 'buy', 'neutral', 'sell', 'buy'],
-    ['neutral', 'buy', 'buy', 'sell', 'buy', 'neutral'],
-    ['sell', 'neutral', 'buy', 'buy', 'sell', 'buy']
-  ],
+  accountBalance: 0,
+  buyingPower: 0,
+  totalValue: 0,
+  pnl: 0,
+  cash: 0,
+  riskScore: 0,
+  sentiment: 0,
+  trend: 0,
+  portfolio: {},
+  positions: [],
+  history: [],
+  watchlist: [],
+  heatmap: [],
   newsReviews: [],
-  candles: [
-    { o: 1.7442, h: 1.7488, l: 1.7428, c: 1.7469 },
-    { o: 1.7469, h: 1.7494, l: 1.7434, c: 1.7448 },
-    { o: 1.7448, h: 1.7499, l: 1.7425, c: 1.7491 },
-    { o: 1.7491, h: 1.7526, l: 1.7464, c: 1.7485 },
-    { o: 1.7485, h: 1.7532, l: 1.7463, c: 1.7523 },
-    { o: 1.7523, h: 1.7559, l: 1.7498, c: 1.7512 },
-    { o: 1.7512, h: 1.7568, l: 1.7487, c: 1.7557 },
-    { o: 1.7557, h: 1.7594, l: 1.7532, c: 1.7578 },
-    { o: 1.7578, h: 1.7603, l: 1.7552, c: 1.7581 },
-    { o: 1.7581, h: 1.7612, l: 1.7561, c: 1.7607 },
-    { o: 1.7607, h: 1.7652, l: 1.7586, c: 1.7638 },
-    { o: 1.7638, h: 1.7705, l: 1.7601, c: 1.7689 },
-    { o: 1.7689, h: 1.7712, l: 1.7657, c: 1.7661 },
-    { o: 1.7661, h: 1.7708, l: 1.7642, c: 1.7681 },
-    { o: 1.7681, h: 1.7738, l: 1.7670, c: 1.7719 },
-    { o: 1.7719, h: 1.7762, l: 1.7699, c: 1.7734 },
-    { o: 1.7734, h: 1.7780, l: 1.7715, c: 1.7756 },
-    { o: 1.7756, h: 1.7802, l: 1.7729, c: 1.7794 },
-    { o: 1.7794, h: 1.7828, l: 1.7760, c: 1.7783 },
-    { o: 1.7783, h: 1.7820, l: 1.7762, c: 1.7801 },
-    { o: 1.7801, h: 1.7854, l: 1.7790, c: 1.7837 },
-    { o: 1.7837, h: 1.7875, l: 1.7815, c: 1.7861 },
-    { o: 1.7861, h: 1.7918, l: 1.7847, c: 1.7899 },
-    { o: 1.7899, h: 1.7946, l: 1.7871, c: 1.7922 },
-    { o: 1.7922, h: 1.7964, l: 1.7909, c: 1.7941 },
-    { o: 1.7941, h: 1.7992, l: 1.7920, c: 1.7973 }
-  ]
+  candles: []
 };
 let selectedSymbol = 'AAPL';
+let selectedNewsSymbol = 'ALL';
 let selectedPeriod = 'D1';
 let chartOptions = { type: 'candles', grid: true, ma: true, crosshair: true };
 let liveQuoteInFlight = false;
 let watchlistQuotesInFlight = false;
 let dashboardInFlight = false;
+let jobInFlight = false;
 
 function currency(value) {
   return new Intl.NumberFormat('en-US', {
@@ -107,15 +64,23 @@ function renderStats() {
   document.getElementById('totalValue').textContent = currency(dashboardState.totalValue);
   document.getElementById('pnlValue').textContent = currency(dashboardState.pnl);
   document.getElementById('cashValue').textContent = currency(dashboardState.cash);
-  document.getElementById('riskScore').textContent = `${dashboardState.riskScore}%`;
-  document.getElementById('riskMeter').style.width = `${dashboardState.riskScore}%`;
+  const riskScore = Number(dashboardState.riskScore);
+  document.getElementById('riskScore').textContent = Number.isFinite(riskScore) ? `${riskScore}%` : '--';
+  document.getElementById('riskMeter').style.width = `${Number.isFinite(riskScore) ? Math.max(0, Math.min(100, riskScore)) : 0}%`;
   document.getElementById('sentimentValue').textContent = dashboardState.sentiment.toFixed(2);
   document.getElementById('totalTrend').textContent = pct(dashboardState.trend);
   document.getElementById('pnlTrend').textContent = pct(dashboardState.trend * 1.5);
-  document.getElementById('sentimentTrend').textContent = dashboardState.sentiment >= 0.65 ? 'Bullish' : 'Neutral';
+  document.getElementById('sentimentTrend').textContent =
+    dashboardState.sentiment >= 0.05 ? 'Bullish' : (dashboardState.sentiment <= -0.05 ? 'Bearish' : 'Neutral');
   const metrics = dashboardState.riskMetrics || {};
   const sharpe = Number(metrics.sharpe);
   const drawdown = Number(metrics.drawdown);
+  const volatility = Number(metrics.volatility);
+  const concentration = Number(metrics.concentration);
+  document.getElementById('riskScoreDetail').textContent =
+    Number.isFinite(volatility) && Number.isFinite(drawdown) && Number.isFinite(concentration)
+      ? `Vol ${volatility.toFixed(1)}% · DD ${drawdown.toFixed(1)}% · Max position ${concentration.toFixed(1)}%`
+      : 'Portfolio risk metrics unavailable';
   document.getElementById('sharpeValue').textContent = Number.isFinite(sharpe) ? sharpe.toFixed(2) : '--';
   document.getElementById('drawdownValue').textContent = Number.isFinite(drawdown) ? `${drawdown.toFixed(2)}%` : '--';
   document.getElementById('sharpeNote').textContent = 'Calculated from live portfolio curve';
@@ -162,24 +127,32 @@ function setHealthStatus(id, label, tone, detail) {
 
 async function fetchSystemStatus() {
   try {
-    const [healthResp, executionResp, brokerResp, portfolioResp] = await Promise.allSettled([
-      fetch('/health', { cache: 'no-store' }),
-      fetch('/api/execution/status', { cache: 'no-store' }),
-      fetch('/api/broker/status', { cache: 'no-store' }),
-      fetch('/api/portfolio?holding=5', { cache: 'no-store' })
+    const [healthResp, executionResp, brokerResp, portfolioResp, newsResp] = await Promise.allSettled([
+      fetch(apiUrl('/health'), { cache: 'no-store' }),
+      fetch(apiUrl('/api/execution/status'), { cache: 'no-store' }),
+      fetch(apiUrl('/api/broker/status'), { cache: 'no-store' }),
+      fetch(apiUrl('/api/portfolio?holding=5'), { cache: 'no-store' }),
+      fetch(apiUrl('/api/news/status'), { cache: 'no-store' })
     ]);
 
     const health = healthResp.status === 'fulfilled' && healthResp.value.ok ? await healthResp.value.json().catch(() => ({})) : {};
     const execution = executionResp.status === 'fulfilled' && executionResp.value.ok ? await executionResp.value.json().catch(() => ({})) : {};
     const broker = brokerResp.status === 'fulfilled' && brokerResp.value.ok ? await brokerResp.value.json().catch(() => ({})) : {};
     const portfolio = portfolioResp.status === 'fulfilled' && portfolioResp.value.ok ? await portfolioResp.value.json().catch(() => ({})) : {};
+    const news = newsResp.status === 'fulfilled' && newsResp.value.ok ? await newsResp.value.json().catch(() => ({})) : {};
 
-    const dataHealthy = Array.isArray(dashboardState.newsReviews) && dashboardState.newsReviews.length > 0;
+    const dataHealthy = Boolean(news.hasData && news.fresh) && !news.lastError && !news.running;
     setHealthStatus(
       'dataHealthStatus',
       dataHealthy ? 'Healthy' : 'Degraded',
       dataHealthy ? 'good' : 'warning',
-      dataHealthy ? 'pricing and sentiment online' : 'waiting for market/news data'
+      dataHealthy
+        ? `news data ready · updated ${new Date(news.updatedAt).toLocaleTimeString()}`
+        : (news.running
+          ? 'news refresh running'
+          : (news.lastError || (!news.hasData
+            ? 'no processed news data'
+            : `news data stale · updated ${news.updatedAt ? new Date(news.updatedAt).toLocaleTimeString() : 'unknown'}`)))
     );
 
     const portfolioReady = portfolio && portfolio.status === 'ready';
@@ -187,7 +160,9 @@ async function fetchSystemStatus() {
       'portfolioHealthStatus',
       portfolioReady ? 'Ready' : 'Pending',
       portfolioReady ? 'good' : 'warning',
-      portfolioReady ? `H${portfolio.holding || 5} backtest loaded` : 'run /run-portfolio to generate metrics'
+      portfolioReady
+        ? `H${portfolio.holding || 5} backtest loaded`
+        : (portfolio.message || 'portfolio artifacts unavailable')
     );
 
     const paper = execution && execution.paper ? execution.paper : {};
@@ -199,10 +174,19 @@ async function fetchSystemStatus() {
       executionTone,
       paper.lastAction || 'autonomous paper mode available'
     );
+    const paperStatus = document.getElementById('paperStatus');
+    paperStatus.textContent = paper.running ? 'Paper trading running' : 'Paper trading stopped';
+    paperStatus.classList.toggle('ready', Boolean(paper.running));
+    paperStatus.classList.toggle('unavailable', !paper.running);
+    document.getElementById('paperStartBtn').disabled = Boolean(paper.running || paper.halted);
+    document.getElementById('paperStopBtn').disabled = !paper.running;
 
-    const brokerState = broker && broker.alpaca && broker.alpaca.configured ? 'Ready' : 'Idle';
-    const brokerTone = broker && broker.alpaca && broker.alpaca.configured ? 'good' : 'neutral';
-    const brokerText = broker && broker.alpaca && broker.alpaca.configured ? 'Alpaca paper enabled' : 'Alpaca + IBKR disconnected';
+    const alpaca = broker && broker.alpaca;
+    const alpacaOk = Boolean(alpaca && alpaca.configured);
+    const brokerState = alpacaOk ? 'Ready' : 'Idle';
+    const brokerTone = alpacaOk ? 'good' : 'neutral';
+    const buyingPowerStr = alpaca && alpaca.buyingPower ? ` · $${Math.round(alpaca.buyingPower).toLocaleString()} BP` : '';
+    const brokerText = alpacaOk ? `Alpaca Paper active${buyingPowerStr}` : 'Alpaca: Click to add keys';
     setHealthStatus('brokerHealthStatus', brokerState, brokerTone, brokerText);
 
     const overall = health && health.ok ? 'online' : 'offline';
@@ -229,6 +213,10 @@ function renderPortfolioStatus() {
 
 function renderPositions() {
   const positionsList = document.getElementById('positionsList');
+  if (!dashboardState.positions.length) {
+    positionsList.innerHTML = '<div class="empty-state">No open positions.</div>';
+    return;
+  }
   positionsList.innerHTML = dashboardState.positions
     .map((position) => {
       const value = position.quantity * position.price;
@@ -248,6 +236,7 @@ function renderPositions() {
             <span>${position.change >= 0 ? 'Long' : 'Short'}</span>
           </div>
           <div class="position-change ${className}">${pct(position.change)}</div>
+          <button class="close-position" type="button" data-symbol="${position.symbol}" aria-label="Close ${position.symbol} position">Close</button>
         </div>
       `;
     })
@@ -256,11 +245,16 @@ function renderPositions() {
 
 function renderHistory() {
   const historyList = document.getElementById('historyList');
+  if (!dashboardState.history.length) {
+    historyList.innerHTML = '<div class="empty-state">No paper-trading history.</div>';
+    return;
+  }
   historyList.innerHTML = dashboardState.history
     .map((trade) => `
       <div class="history-row">
         <div>
           <strong>${trade.symbol}</strong>
+          <span>${trade.name || trade.symbol}</span>
           <span>${trade.time}</span>
         </div>
         <div class="side ${trade.side.toLowerCase()}">${trade.side}</div>
@@ -279,25 +273,59 @@ function renderHistory() {
 
 function renderWatchlist() {
   const watchlist = document.getElementById('watchlist');
-  watchlist.innerHTML = dashboardState.watchlist
-    .map((item) => `
-      <button class="watch-row stock-button" data-symbol="${item.symbol}">
+  const newsSymbol = document.getElementById('newsSymbol');
+  const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[character]);
+  newsSymbol.innerHTML = [
+    '<option value="ALL">All stocks</option>',
+    ...dashboardState.watchlist.map((item) =>
+      `<option value="${escapeHtml(item.symbol)}">${escapeHtml(item.label || item.symbol)}</option>`)
+  ].join('');
+  newsSymbol.value = selectedNewsSymbol;
+  watchlist.innerHTML = `
+    <div class="watch-row watchlist-header" aria-hidden="true">
+      <span>Symbol / News volume</span>
+      <span>Latest news</span>
+      <span>Last</span>
+      <span>Day change</span>
+    </div>
+    ${dashboardState.watchlist
+    .map((item) => {
+      const last = Number(item.last);
+      const change = Number(item.change);
+      const hasQuote = Number.isFinite(last);
+      const hasChange = Number.isFinite(change);
+      const headline = item.newsHeadline || 'No headline available';
+      const parsedDate = item.newsDate ? new Date(item.newsDate) : null;
+      const newsDate = parsedDate && !Number.isNaN(parsedDate.getTime())
+        ? parsedDate.toLocaleDateString()
+        : '';
+      const newsVolume = `${item.newsCount ?? 0} articles${item.newsCountSource ? ` · ${item.newsCountSource}` : ''}`;
+      return `
+      <button class="watch-row stock-button" data-symbol="${escapeHtml(item.symbol)}">
         <div>
-          <strong>${item.label || item.symbol}</strong>
-          <span>${item.volume}</span>
+          <strong>${escapeHtml(item.label || item.symbol)}</strong>
+          <span>${escapeHtml(newsVolume)}</span>
+        </div>
+        <div class="watch-news">
+          <strong title="${escapeHtml(headline)}">${escapeHtml(headline)}</strong>
+          <span>${escapeHtml([item.newsSource, newsDate].filter(Boolean).join(' · '))}</span>
         </div>
         <div class="position-value">
-          <strong>${item.last.toFixed(2)}</strong>
+          <strong>${hasQuote ? last.toFixed(2) : '--'}</strong>
           <span>Last</span>
         </div>
-        <div class="side ${item.change >= 0 ? 'buy' : 'sell'}">${pct(item.change)}</div>
-        <div class="position-value">
-          <strong>${item.change >= 0 ? 'Bullish' : 'Bearish'}</strong>
-          <span>Bias</span>
-        </div>
+        <div class="side ${hasChange ? (change >= 0 ? 'buy' : 'sell') : 'neutral'}">${hasChange ? pct(change) : '--'}</div>
       </button>
-    `)
-    .join('');
+    `;
+    })
+    .join('')}
+  `;
 }
 
 function renderHeatmap() {
@@ -312,7 +340,7 @@ function renderNewsReviews() {
   const container = document.getElementById('newsReviews');
   const reviews = dashboardState.newsReviews || [];
   if (!reviews.length) {
-    container.innerHTML = '<div class="empty-state">No Qwen-enriched news found. Run the news pipeline with Qwen enrichment enabled.</div>';
+    container.innerHTML = `<div class="empty-state">${dashboardState.newsMessage || 'No news data available.'}</div>`;
     return;
   }
   container.innerHTML = reviews.map((item) => {
@@ -336,6 +364,9 @@ function renderNewsReviews() {
       </article>
     `;
   }).join('');
+  if (dashboardState.newsUpdatedAt) {
+    container.insertAdjacentHTML('afterbegin', `<div class="empty-state">Updated ${new Date(dashboardState.newsUpdatedAt).toLocaleString()} · ${dashboardState.newsSource || 'pipeline output'}</div>`);
+  }
 }
 
 function drawCandles() {
@@ -463,7 +494,7 @@ async function fetchMarket(symbol = selectedSymbol, period = selectedPeriod) {
   fetchNewsReviews(selectedSymbol);
   const notice = document.getElementById('chartNotice');
   try {
-    const response = await fetch(`/api/market?symbol=${encodeURIComponent(selectedSymbol)}&period=${period}&ts=${Date.now()}`, { cache: 'no-store' });
+    const response = await fetch(apiUrl(`/api/market?symbol=${encodeURIComponent(selectedSymbol)}&period=${period}&ts=${Date.now()}`), { cache: 'no-store' });
     if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
     const market = await response.json();
     const quotePrice = market.last.toFixed(4);
@@ -480,9 +511,13 @@ async function fetchMarket(symbol = selectedSymbol, period = selectedPeriod) {
 
 }
 
-async function fetchNewsReviews(symbol = selectedSymbol) {
+async function fetchNewsReviews(symbol = selectedNewsSymbol) {
   try {
-    const response = await fetch(`/api/dashboard?symbol=${encodeURIComponent(symbol)}&ts=${Date.now()}`, { cache: 'no-store' });
+    selectedNewsSymbol = symbol || 'ALL';
+    const query = selectedNewsSymbol === 'ALL'
+      ? ''
+      : `symbol=${encodeURIComponent(selectedNewsSymbol)}&`;
+    const response = await fetch(apiUrl(`/api/dashboard?${query}ts=${Date.now()}`), { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     dashboardState.newsReviews = payload.newsReviews || [];
@@ -500,7 +535,7 @@ async function refreshLiveQuote() {
   if (liveQuoteInFlight) return;
   liveQuoteInFlight = true;
   try {
-    const response = await fetch(`/api/market/live?symbol=${encodeURIComponent(selectedSymbol)}&ts=${Date.now()}`, { cache: 'no-store' });
+    const response = await fetch(apiUrl(`/api/market/live?symbol=${encodeURIComponent(selectedSymbol)}&ts=${Date.now()}`), { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const market = await response.json();
     const position = (dashboardState.positions || []).find((item) => item.symbol === market.symbol);
@@ -524,17 +559,20 @@ async function refreshWatchlistQuotes() {
     if (watchlistQuotesInFlight) return;
     watchlistQuotesInFlight = true;
     try {
-    await Promise.all(dashboardState.watchlist.map(async (item) => {
-      try {
-        const response = await fetch(`/api/market/live?symbol=${encodeURIComponent(item.symbol)}`);
-        if (!response.ok) return;
-        const quote = await response.json();
-        item.last = quote.last;
-        item.change = quote.change;
-      } catch (error) {
-        console.warn(`Quote unavailable for ${item.symbol}:`, error);
-      }
-    }));
+    for (let start = 0; start < dashboardState.watchlist.length; start += 4) {
+      const batch = dashboardState.watchlist.slice(start, start + 4);
+      await Promise.all(batch.map(async (item) => {
+        try {
+          const response = await fetch(apiUrl(`/api/market/live?symbol=${encodeURIComponent(item.symbol)}`));
+          if (!response.ok) return;
+          const quote = await response.json();
+          item.last = quote.last;
+          item.change = quote.change;
+        } catch (error) {
+          console.warn(`Quote unavailable for ${item.symbol}:`, error);
+        }
+      }));
+    }
     renderWatchlist();
     renderTicker();
     renderMarketClock();
@@ -590,7 +628,10 @@ function bindOrderActions() {
   });
   document.getElementById('watchlist').addEventListener('click', (event) => {
       const button = event.target.closest('[data-symbol]');
-      if (button) fetchMarket(button.dataset.symbol, selectedPeriod);
+      if (button) {
+        selectedNewsSymbol = button.dataset.symbol;
+        fetchMarket(button.dataset.symbol, selectedPeriod);
+      }
   });
 
   document.getElementById('tradeBtn').addEventListener('click', () => {
@@ -610,7 +651,7 @@ function bindOrderActions() {
     const symbol = document.getElementById('orderSymbol').value.trim().toUpperCase();
     const quantity = Number(document.getElementById('orderQuantity').value);
     try {
-      const response = await fetch('/api/orders', {
+      const response = await fetch(apiUrl('/api/orders'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ side, symbol, quantity })
@@ -653,25 +694,47 @@ async function fetchDashboard() {
   if (dashboardInFlight) return;
   dashboardInFlight = true;
   try {
-    const response = await fetch(`/api/dashboard?symbol=${encodeURIComponent(selectedSymbol)}&ts=${Date.now()}`, { cache: 'no-store' });
+    const response = await fetch(apiUrl(`/api/dashboard?symbol=${encodeURIComponent(selectedSymbol)}&ts=${Date.now()}`), { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
-    dashboardState = { ...dashboardState, ...payload };
+    dashboardState = { ...dashboardState, ...payload, newsReviews: dashboardState.newsReviews };
     if (typeof payload.selectedSentiment === 'number') {
       dashboardState.sentiment = payload.selectedSentiment;
     }
-    const ordersResponse = await fetch(`/api/orders?ts=${Date.now()}`, { cache: 'no-store' });
+    const ordersResponse = await fetch(apiUrl(`/api/orders?ts=${Date.now()}`), { cache: 'no-store' });
     if (ordersResponse.ok) {
       const orderPayload = await ordersResponse.json();
       dashboardState.history = [...(orderPayload.orders || []), ...(dashboardState.history || [])]
         .filter((item, index, items) => !item.id || items.findIndex((candidate) => candidate.id === item.id) === index);
     }
   } catch (error) {
-    console.warn('Dashboard API unavailable, using local demo state:', error);
+    console.warn('Dashboard API unavailable; retaining the last known state:', error);
   } finally {
     dashboardInFlight = false;
   }
   refreshDashboard();
+}
+
+async function runJob(path, buttonId, successMessage) {
+  if (jobInFlight) return;
+  jobInFlight = true;
+  const button = document.getElementById(buttonId);
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = 'RUNNING...';
+  try {
+    const response = await fetch(apiUrl(path), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const result = await response.json();
+    if (!response.ok || result.ok === false) throw new Error(result.error || `HTTP ${response.status}`);
+    document.getElementById('chartNotice').textContent = successMessage(result);
+    await Promise.all([fetchDashboard(), fetchSystemStatus()]);
+  } catch (error) {
+    document.getElementById('chartNotice').textContent = `Operation failed: ${error.message}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+    jobInFlight = false;
+  }
 }
 
 function refreshDashboard() {
@@ -703,8 +766,12 @@ document.addEventListener('DOMContentLoaded', () => {
   bindChartTools();
   bindOrderActions();
   bindNavigation();
+  document.getElementById('newsSymbol').addEventListener('change', (event) => {
+    fetchNewsReviews(event.target.value === 'ALL' ? '' : event.target.value);
+  });
   fetchSystemStatus();
   fetchDashboard();
+  fetchNewsReviews('ALL');
   fetchMarket();
   refreshWatchlistQuotes();
   let refreshTick = 0;
@@ -720,16 +787,78 @@ document.addEventListener('DOMContentLoaded', () => {
   }, 1000);
 
   document.getElementById('refreshBtn').addEventListener('click', refreshAll);
+  document.getElementById('newsBtn').addEventListener('click', () =>
+    runJob('/api/news/refresh', 'newsBtn', (result) =>
+      result.running ? 'News refresh is already running' : `News updated: ${result.rows} rows`));
+  document.getElementById('backtestBtn').addEventListener('click', () =>
+    runJob('/run-portfolio', 'backtestBtn', (result) => `Backtest complete: ${result.models?.length || 0} models`));
+  document.getElementById('paperStartBtn').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const response = await fetch(apiUrl('/api/paper/start'), { method: 'POST' });
+      const result = await response.json();
+      if (!response.ok || result.ok === false || !result.running) {
+        throw new Error(result.haltReason || result.error || `HTTP ${response.status}`);
+      }
+      const alpacaOk = result.broker === 'alpaca' || result.alpacaConfigured;
+      document.getElementById('chartNotice').textContent = alpacaOk
+        ? 'Paper trading started (Alpaca Paper API Connected)'
+        : 'Paper trading started (Simulated mode · configure ALPACA KEYS to trade on Alpaca)';
+      await fetchSystemStatus();
+    } catch (error) {
+      document.getElementById('chartNotice').textContent = `Paper trading failed: ${error.message}`;
+    } finally {
+      button.disabled = false;
+    }
+  });
+  document.getElementById('paperStopBtn').addEventListener('click', async () => {
+    const response = await fetch(apiUrl('/api/paper/stop'), { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok || result.ok === false) {
+      document.getElementById('chartNotice').textContent = `Paper trading stop failed: ${result.error || response.status}`;
+      return;
+    }
+    await fetchSystemStatus();
+  });
   document.getElementById('historyList').addEventListener('click', async (event) => {
     const button = event.target.closest('.cancel-order');
     if (!button) return;
-    const response = await fetch(`/api/orders/${button.dataset.orderId}/cancel`, { method: 'POST' });
+    const response = await fetch(apiUrl(`/api/orders/${button.dataset.orderId}/cancel`), { method: 'POST' });
     const result = await response.json();
     if (!response.ok) {
       window.alert(result.error || 'Order cancellation failed');
       return;
     }
     await fetchDashboard();
+  });
+  document.getElementById('positionsList').addEventListener('click', async (event) => {
+    const button = event.target.closest('.close-position');
+    if (!button) return;
+    const position = dashboardState.positions.find((item) => item.symbol === button.dataset.symbol);
+    if (!position) return;
+    const name = position.name || position.symbol;
+    if (!window.confirm(`Close the full ${position.quantity} share ${name} position at the current market price?`)) {
+      return;
+    }
+    button.disabled = true;
+    try {
+      const response = await fetch(apiUrl('/api/positions/close'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: position.symbol })
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        window.alert(result.error || 'Position close failed');
+        return;
+      }
+      await fetchDashboard();
+    } catch (error) {
+      window.alert(`Position close failed: ${error.message}`);
+    } finally {
+      button.disabled = false;
+    }
   });
 
   async function refreshAll() {
@@ -750,6 +879,135 @@ document.addEventListener('DOMContentLoaded', () => {
       button.disabled = false;
       button.textContent = 'RELOAD';
     }
+  }
+
+  // ── Alpaca Paper Trading Keys Modal ──
+  function openAlpacaModal() {
+    const modal = document.getElementById('alpacaModal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden', 'false');
+    const statusMsg = document.getElementById('alpacaStatusMsg');
+    if (statusMsg) {
+      statusMsg.textContent = 'Checking current broker status...';
+      statusMsg.style.color = '#849197';
+    }
+    fetch(apiUrl('/api/broker/status'))
+      .then((res) => res.json())
+      .then((data) => {
+        const alpaca = data && data.alpaca;
+        const box = document.getElementById('alpacaAccountBox');
+        if (alpaca && alpaca.configured) {
+          if (box) box.classList.remove('hidden');
+          const accStatus = document.getElementById('alpacaAccStatus');
+          if (accStatus) accStatus.textContent = (alpaca.status || 'ACTIVE').toUpperCase();
+          const accNum = document.getElementById('alpacaAccNumber');
+          if (accNum) accNum.textContent = alpaca.accountNumber || '--';
+          const bp = document.getElementById('alpacaAccBuyingPower');
+          if (bp) bp.textContent = `$${Number(alpaca.buyingPower || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+          const pv = document.getElementById('alpacaAccPortfolioValue');
+          if (pv) pv.textContent = `$${Number(alpaca.portfolioValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+          const cash = document.getElementById('alpacaAccCash');
+          if (cash) cash.textContent = `$${Number(alpaca.cash || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+          if (statusMsg) {
+            statusMsg.textContent = 'Connected to Alpaca Paper Trading.';
+            statusMsg.style.color = '#42d17b';
+          }
+        } else {
+          if (box) box.classList.add('hidden');
+          if (statusMsg) {
+            statusMsg.textContent = 'Enter keys below to connect Alpaca paper trading.';
+            statusMsg.style.color = '#849197';
+          }
+        }
+      })
+      .catch(() => {
+        if (statusMsg) statusMsg.textContent = '';
+      });
+  }
+
+  function closeAlpacaModal() {
+    const modal = document.getElementById('alpacaModal');
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.setAttribute('aria-hidden', 'true');
+  }
+
+  const alpacaConfigBtn = document.getElementById('alpacaConfigBtn');
+  if (alpacaConfigBtn) alpacaConfigBtn.addEventListener('click', openAlpacaModal);
+  const brokerMonitorItem = document.getElementById('brokerMonitorItem');
+  if (brokerMonitorItem) brokerMonitorItem.addEventListener('click', openAlpacaModal);
+  const closeAlpacaBtn = document.getElementById('closeAlpacaModal');
+  if (closeAlpacaBtn) closeAlpacaBtn.addEventListener('click', closeAlpacaModal);
+  const cancelAlpacaBtn = document.getElementById('cancelAlpacaModal');
+  if (cancelAlpacaBtn) cancelAlpacaBtn.addEventListener('click', closeAlpacaModal);
+
+  const saveAlpacaKeysBtn = document.getElementById('saveAlpacaKeysBtn');
+  if (saveAlpacaKeysBtn) {
+    saveAlpacaKeysBtn.addEventListener('click', async () => {
+      const apiKey = document.getElementById('alpacaApiKeyInput').value.trim();
+      const secretKey = document.getElementById('alpacaSecretKeyInput').value.trim();
+      const statusMsg = document.getElementById('alpacaStatusMsg');
+      if (!apiKey || !secretKey) {
+        if (statusMsg) {
+          statusMsg.textContent = 'Please enter both API Key ID and Secret Key.';
+          statusMsg.style.color = '#ff4d4f';
+        }
+        return;
+      }
+      saveAlpacaKeysBtn.disabled = true;
+      saveAlpacaKeysBtn.textContent = 'VERIFYING...';
+      if (statusMsg) {
+        statusMsg.textContent = 'Connecting to paper-api.alpaca.markets...';
+        statusMsg.style.color = '#f0a400';
+      }
+      try {
+        const resp = await fetch(apiUrl('/api/alpaca/config'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey, secretKey })
+        });
+        const result = await resp.json();
+        if (!resp.ok || !result.ok) {
+          throw new Error(result.error || `HTTP ${resp.status}`);
+        }
+        if (statusMsg) {
+          statusMsg.textContent = 'Connected successfully! Alpaca paper trading is now ready.';
+          statusMsg.style.color = '#42d17b';
+        }
+        saveAlpacaKeysBtn.textContent = 'CONNECTED';
+
+        const acc = result.account || {};
+        const box = document.getElementById('alpacaAccountBox');
+        if (box) box.classList.remove('hidden');
+        const accStatus = document.getElementById('alpacaAccStatus');
+        if (accStatus) accStatus.textContent = (acc.status || 'ACTIVE').toUpperCase();
+        const accNum = document.getElementById('alpacaAccNumber');
+        if (accNum) accNum.textContent = acc.account_number || '--';
+        const bp = document.getElementById('alpacaAccBuyingPower');
+        if (bp) bp.textContent = `$${Number(acc.buying_power || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const pv = document.getElementById('alpacaAccPortfolioValue');
+        if (pv) pv.textContent = `$${Number(acc.portfolio_value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const cash = document.getElementById('alpacaAccCash');
+        if (cash) cash.textContent = `$${Number(acc.cash || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+        document.getElementById('alpacaSecretKeyInput').value = '';
+
+        await fetchSystemStatus();
+        setTimeout(() => {
+          closeAlpacaModal();
+          saveAlpacaKeysBtn.disabled = false;
+          saveAlpacaKeysBtn.textContent = 'CONNECT & SAVE';
+        }, 1200);
+      } catch (err) {
+        if (statusMsg) {
+          statusMsg.textContent = `Error: ${err.message}`;
+          statusMsg.style.color = '#ff4d4f';
+        }
+        saveAlpacaKeysBtn.disabled = false;
+        saveAlpacaKeysBtn.textContent = 'CONNECT & SAVE';
+      }
+    });
   }
 
   window.addEventListener('resize', drawCandles);
